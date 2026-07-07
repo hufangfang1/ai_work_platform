@@ -55,7 +55,7 @@ class TaskController extends BaseController
 
     public function generatePlan($id, PlanService $service)
     {
-        return $this->ok($service->generate((int) $id));
+        return $this->ok($service->generate((int) $id, $this->request->post('model/s', '')));
     }
 
     public function savePlan($id, PlanService $service)
@@ -70,7 +70,7 @@ class TaskController extends BaseController
 
     public function execute($id, RunService $service)
     {
-        return $this->ok($service->enqueueCoding((int) $id), 'queued');
+        return $this->ok($service->enqueueCoding((int) $id, $this->request->post('model/s', '')), 'queued');
     }
 
     public function review($id, ReviewService $service)
@@ -80,7 +80,7 @@ class TaskController extends BaseController
 
     public function aiReview($id, ReviewService $service)
     {
-        return $this->ok($service->aiReview((int) $id));
+        return $this->ok($service->aiReview((int) $id, $this->request->post('model/s', '')));
     }
 
     public function approveReview($id, ReviewService $service)
@@ -95,12 +95,15 @@ class TaskController extends BaseController
 
     public function fix($id, RunService $service)
     {
-        return $this->ok($service->enqueueFix((int) $id, $this->request->post('feedback/s', '')), 'queued');
+        return $this->ok(
+            $service->enqueueFix((int) $id, $this->request->post('feedback/s', ''), $this->request->post('model/s', '')),
+            'queued'
+        );
     }
 
     public function generateCommitMessage($id, CommitService $service)
     {
-        return $this->ok($service->generateMessage((int) $id));
+        return $this->ok($service->generateMessage((int) $id, $this->request->post('model/s', '')));
     }
 
     public function commit($id, CommitService $service)

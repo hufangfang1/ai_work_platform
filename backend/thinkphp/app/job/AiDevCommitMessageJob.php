@@ -2,12 +2,11 @@
 
 namespace app\job;
 
-use app\service\AiDev\AgentExecutorService;
+use app\service\AiDev\CommitMessageExecutorService;
 use app\service\AiDev\RunService;
-use app\service\AiDev\TaskService;
 use think\queue\Job;
 
-class AiDevCodeJob
+class AiDevCommitMessageJob
 {
     public function fire(Job $job, $data)
     {
@@ -20,8 +19,8 @@ class AiDevCodeJob
                 $job->delete();
                 return;
             }
-            $runService->appendLog($runId, 'queue', 'Worker 领取 AI 编码任务');
-            (new AgentExecutorService())->execute($runId);
+            $runService->appendLog($runId, 'queue', 'Worker 领取 commit message 生成任务');
+            (new CommitMessageExecutorService())->execute($runId);
             $job->delete();
         } catch (\Throwable $e) {
             $run = $runService->detail($runId);
@@ -31,9 +30,6 @@ class AiDevCodeJob
             }
             $runService->appendLog($runId, 'error', $e->getMessage());
             $runService->finish($runId, 'failed', '', $e->getMessage());
-            if ($run) {
-                (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
-            }
             $job->delete();
         }
     }
@@ -47,8 +43,5 @@ class AiDevCodeJob
         $runService = new RunService();
         $run = $runService->detail($runId);
         $runService->finish($runId, 'failed', '', $run && $run['error'] ? $run['error'] : '队列任务执行失败');
-        if ($run) {
-            (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
-        }
     }
 }

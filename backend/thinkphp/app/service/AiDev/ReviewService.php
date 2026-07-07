@@ -62,7 +62,7 @@ class ReviewService
      * 只读 AI Review：让 Claude 读取计划、diff 与代码上下文，输出结构化风险结论。
      * 只允许 Read/Glob/Grep，不允许 Edit/Write/Bash。
      */
-    public function aiReview($taskId)
+    public function aiReview($taskId, $model = '')
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
         $change = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('created_at', 'desc')->find();
@@ -83,20 +83,33 @@ class ReviewService
         }
         $doc = Db::name('ai_dev_requirement_docs')->where('id', $task['doc_version_id'])->find();
 
-        $prompt = $this->buildAiReviewPrompt($task, $plan, $doc, $change);
-        Db::connect()->close();
-        $raw = (new ClaudeCliService())->runJson($prompt, [
-            'cwd' => $worktree,
-            'timeout' => 300,
-            'max_turns' => 12,
-            'allowed_tools' => 'Read,Glob,Grep',
-        ]);
+        $this->assertNoRunningAiReview($taskId);
+        $run = (new RunService())->enqueueGeneration((int) $taskId, 'ai_review', [
+            'operation' => 'ai_review',
+            'task_id' => (int) $taskId,
+            'change_run_id' => (int) $change['run_id'],
+            'prompt' => $this->buildAiReviewPrompt($task, $plan, $doc, $change),
+            'options' => [
+                'cwd' => $worktree,
+                'timeout' => 300,
+                'max_turns' => 12,
+                'allowed_tools' => 'Read,Glob,Grep',
+            ],
+        ], 'task:' . (int) $taskId, $model);
+        (new TaskService())->updateStatus($taskId, 'reviewing');
+        return $run;
+    }
+
+    public function finishAiReviewRun(array $run, array $raw)
+    {
+        $taskId = (int) $run['task_id'];
+        $payload = json_decode((string) $run['input'], true);
         $result = $this->normalizeAiReviewResult($raw);
         $pass = $result['status'] === 'pass';
 
         $id = Db::name('ai_dev_reviews')->insertGetId([
             'task_id' => $taskId,
-            'run_id' => $change['run_id'],
+            'run_id' => isset($payload['change_run_id']) ? (int) $payload['change_run_id'] : 0,
             'status' => $result['status'],
             'risk_level' => $result['risk_level'],
             'review_result' => json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
@@ -105,6 +118,16 @@ class ReviewService
         ]);
         (new TaskService())->updateStatus($taskId, $pass ? 'review_passed' : 'review_failed');
         return Db::name('ai_dev_reviews')->where('id', $id)->find();
+    }
+
+    private function assertNoRunningAiReview($taskId)
+    {
+        $runs = (new RunService())->listByTask($taskId);
+        foreach ($runs as $run) {
+            if ($run['run_type'] === 'ai_review' && in_array($run['status'], ['queued', 'running'], true)) {
+                throw new \RuntimeException('已有 AI Review 正在运行');
+            }
+        }
     }
 
     /**

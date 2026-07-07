@@ -26,20 +26,22 @@ class AgentExecutorService
 
         $allowedTools = $this->buildAllowedTools($project);
         $claudeCommand = function_exists('config') ? config('ai_dev.agent.command', 'claude') : 'claude';
+        $modelProfile = new ModelProfileService();
+        $modelKey = isset($run['model_name']) ? (string) $run['model_name'] : '';
         // claude 在 --print 模式下用 stream-json 必须同时带 --verbose,否则直接报错退出。
         $cmd = sprintf(
             '%s -p "$(cat %s)" --output-format stream-json --verbose --permission-mode acceptEdits --allowedTools %s --max-turns 50',
             escapeshellcmd($claudeCommand),
             escapeshellarg($promptFile),
             escapeshellarg($allowedTools)
-        );
+        ) . $modelProfile->commandArg($modelKey);
 
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
         ];
-        $process = proc_open($cmd, $descriptors, $pipes, $worktree);
+        $process = proc_open($cmd, $descriptors, $pipes, $worktree, $modelProfile->processEnv($modelKey));
         if (!is_resource($process)) {
             throw new \RuntimeException('Claude Code 子进程启动失败');
         }

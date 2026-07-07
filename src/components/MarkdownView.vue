@@ -22,10 +22,13 @@ const html = computed(() => {
 
 <style scoped>
 .md-view {
+  min-width: 0;
+  max-width: 100%;
   font-size: 13px;
   line-height: 1.7;
   color: var(--el-text-color-primary);
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .md-view :deep(h1),
 .md-view :deep(h2),
@@ -43,6 +46,8 @@ const html = computed(() => {
 .md-view :deep(ol) { margin: 6px 0; padding-left: 22px; }
 .md-view :deep(li) { margin: 2px 0; }
 .md-view :deep(code) {
+  white-space: break-spaces;
+  overflow-wrap: anywhere;
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--el-fill-color-light);
@@ -50,14 +55,22 @@ const html = computed(() => {
   font-size: 12px;
 }
 .md-view :deep(pre) {
+  max-width: 100%;
   margin: 8px 0;
   padding: 10px 12px;
   border-radius: 6px;
   background: var(--el-fill-color-light);
   overflow-x: auto;
 }
-.md-view :deep(pre code) { padding: 0; background: none; }
+.md-view :deep(pre code) {
+  padding: 0;
+  background: none;
+  white-space: pre-wrap;
+}
 .md-view :deep(table) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   margin: 8px 0;
   border-collapse: collapse;
   width: 100%;

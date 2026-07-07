@@ -53,9 +53,10 @@
             </div>
             <el-divider style="margin: 4px 0" />
             <div class="toolbar">
+              <ModelPicker v-model="planModel" step="task_plan" />
               <el-button
-                :loading="planning"
-                :disabled="task.status === 'created' || planLocked"
+                :loading="planning || planRunning"
+                :disabled="task.status === 'created' || planLocked || planRunning"
                 @click="generatePlan"
               >
                 <el-icon><MagicStick /></el-icon>
@@ -71,7 +72,13 @@
                 确认计划
               </el-button>
             </div>
-            <div v-if="planning" class="empty-state">AI 正在阅读项目代码生成计划,约需 1-3 分钟…</div>
+            <AiRunPanel
+              v-if="latestPlanRun"
+              style="margin: 8px 0"
+              :run="latestPlanRun"
+              @refresh="load"
+            />
+            <div v-if="planRunning" class="empty-state">AI 计划生成任务已入队，可查看上方日志；完成后会自动刷新。</div>
             <template v-else-if="latestPlan">
               <div class="toolbar" style="justify-content: flex-end">
                 <el-radio-group v-model="planPreview" size="small">
@@ -115,6 +122,7 @@
           </div>
           <div v-if="isOpen(2)" class="flow-step__body">
             <div class="toolbar">
+              <ModelPicker v-model="codeModel" step="coding" />
               <el-button
                 type="primary"
                 :disabled="!['plan_confirmed', 'failed'].includes(task.status)"
@@ -123,28 +131,8 @@
                 <el-icon><VideoPlay /></el-icon>
                 开始 AI 修改
               </el-button>
-              <el-button v-if="runningRun" type="danger" plain @click="cancelRun">取消执行</el-button>
             </div>
-            <div v-if="logLines.length" class="timeline-log" ref="logBox">
-              <div
-                v-for="log in logLines"
-                :key="log.id"
-                class="log-line"
-                :class="`log-line--${logClass(log.event_type)}`"
-              >
-                <code>#{{ log.seq }}</code>
-                <span class="log-type">{{ log.event_type }}</span>
-                <span style="white-space: pre-wrap; word-break: break-word">{{ logText(log) }}</span>
-              </div>
-            </div>
-            <div v-else-if="runningRun?.status === 'queued'" class="muted">
-              <div>任务已入队，等待 Worker 处理…</div>
-              <div class="mono" style="margin-top: 8px; font-size: 12px; line-height: 1.6">
-                若长时间无日志，请在本机启动 Worker：<br />
-                cd backend/thinkphp && php think queue:work --queue ai_dev_code
-              </div>
-            </div>
-            <div v-else class="muted">暂无执行日志</div>
+            <AiRunPanel v-if="latestCodeRun" :run="latestCodeRun" @refresh="load" @retried="load" />
             <el-collapse v-if="task.runs.length">
               <el-collapse-item :title="`历史执行记录(${task.runs.length})`">
                 <el-table :data="task.runs" size="small">
@@ -165,34 +153,26 @@
           </div>
         </div>
 
-        <!-- Step 3 代码改动 -->
+        <!-- Step 3 Review -->
         <div class="flow-step" :class="stepClass(3)">
           <div class="flow-step__head" @click="toggleStep(3)">
             <span class="flow-step__index">3</span>
-            <span class="flow-step__title">代码改动</span>
+            <span class="flow-step__title">Review</span>
             <span class="flow-step__hint">
-              {{ latestChange ? `${changedFiles.length} 个文件变更` : 'diff 与测试输出' }}
+              <template v-if="latestReview">结论:{{ latestReview.status }}</template>
+              <template v-else-if="latestChange">{{ changedFiles.length }} 个文件变更</template>
+              <template v-else>检查与结论</template>
             </span>
           </div>
           <div v-if="isOpen(3)" class="flow-step__body">
             <template v-if="latestChange">
-              <div v-if="latestChange.diff_summary">
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px">
-                  <div class="metric-label">AI 改动说明</div>
-                  <el-radio-group v-model="summaryRaw" size="small">
-                    <el-radio-button :value="false">渲染</el-radio-button>
-                    <el-radio-button :value="true">原文</el-radio-button>
-                  </el-radio-group>
-                </div>
-                <pre v-if="summaryRaw" class="mono" style="white-space: pre-wrap; margin: 0">{{ latestChange.diff_summary }}</pre>
-                <MarkdownView v-else :source="latestChange.diff_summary" max-height="420px" />
-              </div>
-              <div>
-                <div class="metric-label" style="margin-bottom: 6px">变更文件</div>
-                <div v-for="file in changedFiles" :key="file" class="mono" style="padding: 2px 0">
-                  {{ file }}
-                </div>
-              </div>
+              <el-collapse>
+                <el-collapse-item :title="`变更文件(${changedFiles.length})`">
+                  <div v-for="file in changedFiles" :key="file" class="mono" style="padding: 2px 0">
+                    {{ file }}
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
               <div class="diff-entry">
                 <div>
                   <div class="metric-label">git diff</div>
@@ -210,17 +190,6 @@
               </div>
             </template>
             <div v-else class="muted">AI 执行完成后展示改动</div>
-          </div>
-        </div>
-
-        <!-- Step 4 Review -->
-        <div class="flow-step" :class="stepClass(4)">
-          <div class="flow-step__head" @click="toggleStep(4)">
-            <span class="flow-step__index">4</span>
-            <span class="flow-step__title">Review</span>
-            <span class="flow-step__hint">{{ latestReview ? `结论:${latestReview.status}` : '检查与结论' }}</span>
-          </div>
-          <div v-if="isOpen(4)" class="flow-step__body">
             <div class="toolbar">
               <el-button
                 type="primary"
@@ -230,14 +199,21 @@
               >
                 运行自动检查
               </el-button>
+              <ModelPicker v-model="reviewModel" step="ai_review" />
               <el-button
-                :loading="aiReviewing"
-                :disabled="!['code_changed', 'review_passed', 'review_failed'].includes(task.status)"
+                :loading="aiReviewing || aiReviewRunning"
+                :disabled="aiReviewRunning || !['code_changed', 'review_passed', 'review_failed'].includes(task.status)"
                 @click="aiReview"
               >
                 AI 只读 Review
               </el-button>
             </div>
+            <AiRunPanel
+              v-if="latestAiReviewRun"
+              style="margin-bottom: 8px"
+              :run="latestAiReviewRun"
+              @refresh="load"
+            />
             <template v-if="reviewResult">
               <div class="metric-row" style="grid-template-columns: repeat(2, 1fr)">
                 <div class="metric">
@@ -305,6 +281,7 @@
                 placeholder="补充修改要求,AI 将基于 Review 反馈继续修改"
               />
               <div class="toolbar">
+                <ModelPicker v-model="fixModel" step="fix" />
                 <el-button type="warning" :disabled="!fixFeedback.trim()" @click="fix">
                   继续修改(fix 轮次)
                 </el-button>
@@ -313,19 +290,24 @@
           </div>
         </div>
 
-        <!-- Step 5 提交 -->
-        <div class="flow-step" :class="stepClass(5)">
-          <div class="flow-step__head" @click="toggleStep(5)">
-            <span class="flow-step__index">5</span>
+        <!-- Step 4 提交 -->
+        <div class="flow-step" :class="stepClass(4)">
+          <div class="flow-step__head" @click="toggleStep(4)">
+            <span class="flow-step__index">4</span>
             <span class="flow-step__title">提交</span>
             <span class="flow-step__hint">
               <span v-if="task.commit_hash" class="mono">{{ task.commit_hash.slice(0, 10) }}</span>
               <template v-else>人工确认 git commit</template>
             </span>
           </div>
-          <div v-if="isOpen(5)" class="flow-step__body">
+          <div v-if="isOpen(4)" class="flow-step__body">
             <div class="toolbar">
-              <el-button :disabled="task.status !== 'ready_to_commit'" @click="generateCommitMessage">
+              <ModelPicker v-model="commitModel" step="commit_message" />
+              <el-button
+                :loading="commitMessageRunning"
+                :disabled="task.status !== 'ready_to_commit' || commitMessageRunning"
+                @click="generateCommitMessage"
+              >
                 生成 commit message
               </el-button>
               <el-button
@@ -337,6 +319,12 @@
                 确认提交
               </el-button>
             </div>
+            <AiRunPanel
+              v-if="latestCommitMessageRun"
+              style="margin-bottom: 8px"
+              :run="latestCommitMessageRun"
+              @refresh="load"
+            />
             <CodeEditor
               v-model="commitEditor"
               label="commit message(可编辑)"
@@ -350,14 +338,14 @@
           </div>
         </div>
 
-        <!-- Step 6 复盘 -->
-        <div class="flow-step" :class="stepClass(6)">
-          <div class="flow-step__head" @click="toggleStep(6)">
-            <span class="flow-step__index">6</span>
+        <!-- Step 5 复盘 -->
+        <div class="flow-step" :class="stepClass(5)">
+          <div class="flow-step__head" @click="toggleStep(5)">
+            <span class="flow-step__index">5</span>
             <span class="flow-step__title">复盘</span>
             <span class="flow-step__hint">{{ task.retrospective ? '已生成' : '沉淀本次交付' }}</span>
           </div>
-          <div v-if="isOpen(6)" class="flow-step__body">
+          <div v-if="isOpen(5)" class="flow-step__body">
             <div class="toolbar">
               <el-button :disabled="task.status !== 'committed' && !task.retrospective" @click="generateRetro">
                 生成复盘
@@ -445,12 +433,14 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusTag from '../components/StatusTag.vue'
 import CodeEditor from '../components/CodeEditor.vue'
 import MarkdownView from '../components/MarkdownView.vue'
 import DiffView from '../components/DiffView.vue'
+import AiRunPanel from '../components/AiRunPanel.vue'
+import ModelPicker from '../components/ModelPicker.vue'
 import { canTerminate, runningStatuses } from '../services/status'
 import { api } from '../services/api'
 
@@ -461,16 +451,20 @@ const branchEditor = ref('')
 const branchCheck = ref(null)
 const planEditor = ref('')
 const commitEditor = ref('')
+const lastTaskCommitMessage = ref('')
 const retroEditor = ref('')
 const fixFeedback = ref('')
 const rejectFeedback = ref('')
 const approving = ref(false)
 const planPreview = ref(false)
 const retroPreview = ref(false)
-const summaryRaw = ref(false)
 const diffDialogVisible = ref(false)
-const logLines = ref([])
-const logBox = ref(null)
+// 各 AI 步骤本次执行指定的模型 key,空 = 走配置默认
+const planModel = ref('')
+const codeModel = ref('')
+const fixModel = ref('')
+const reviewModel = ref('')
+const commitModel = ref('')
 const openSteps = ref(new Set())
 const branching = ref(false)
 const planning = ref(false)
@@ -480,8 +474,6 @@ const committing = ref(false)
 const cleaningWorktree = ref(false)
 
 let detailTimer = null
-let logTimer = null
-let logRunId = null
 
 const stepByStatus = {
   created: 1,
@@ -491,14 +483,14 @@ const stepByStatus = {
   coding: 2,
   fixing: 2,
   failed: 2,
-  code_changed: 4,
-  reviewing: 4,
-  review_passed: 4,
-  review_failed: 4,
-  ready_to_commit: 5,
-  committing: 5,
-  committed: 6,
-  retrospected: 6,
+  code_changed: 3,
+  reviewing: 3,
+  review_passed: 3,
+  review_failed: 3,
+  ready_to_commit: 4,
+  committing: 4,
+  committed: 5,
+  retrospected: 5,
   terminated: 1,
 }
 
@@ -531,6 +523,33 @@ const reviewGroups = computed(() => ({
   suggestions: { label: '建议优化', items: reviewResult.value?.suggestions || [] },
 }))
 const runningRun = computed(() =>
+  task.value?.runs?.find((run) => ['coding', 'fix'].includes(run.run_type) && ['running', 'queued'].includes(run.status)),
+)
+const latestCodeRun = computed(() =>
+  runningRun.value || task.value?.runs?.find((run) => ['coding', 'fix'].includes(run.run_type)) || null,
+)
+const runningPlanRun = computed(() =>
+  task.value?.runs?.find((run) => run.run_type === 'task_plan' && ['running', 'queued'].includes(run.status)),
+)
+const latestPlanRun = computed(() =>
+  runningPlanRun.value || task.value?.runs?.find((run) => run.run_type === 'task_plan') || null,
+)
+const planRunning = computed(() => !!runningPlanRun.value)
+const runningAiReviewRun = computed(() =>
+  task.value?.runs?.find((run) => run.run_type === 'ai_review' && ['running', 'queued'].includes(run.status)),
+)
+const latestAiReviewRun = computed(() =>
+  runningAiReviewRun.value || task.value?.runs?.find((run) => run.run_type === 'ai_review') || null,
+)
+const aiReviewRunning = computed(() => !!runningAiReviewRun.value)
+const runningCommitMessageRun = computed(() =>
+  task.value?.runs?.find((run) => run.run_type === 'commit_message' && ['running', 'queued'].includes(run.status)),
+)
+const latestCommitMessageRun = computed(() =>
+  runningCommitMessageRun.value || task.value?.runs?.find((run) => run.run_type === 'commit_message') || null,
+)
+const commitMessageRunning = computed(() => !!runningCommitMessageRun.value)
+const activeAnyRun = computed(() =>
   task.value?.runs?.find((run) => ['running', 'queued'].includes(run.status)),
 )
 const runHint = computed(() => {
@@ -564,30 +583,6 @@ function formatTime(value) {
   return new Date(value.replace(' ', 'T')).toLocaleString('zh-CN', { hour12: false })
 }
 
-function logClass(eventType) {
-  if (eventType === 'assistant' || eventType === 'result') return 'assistant'
-  if (eventType === 'error' || eventType === 'stderr') return 'error'
-  if (eventType === 'git' || eventType === 'queue') return 'git'
-  return 'tool'
-}
-
-function logText(log) {
-  const raw = log.content || ''
-  try {
-    const event = JSON.parse(raw)
-    if (event?.message?.content) {
-      return event.message.content
-        .map((part) => part.text || (part.name ? `[tool] ${part.name}` : ''))
-        .filter(Boolean)
-        .join('\n')
-    }
-    if (event?.result) return String(event.result)
-    return raw.length > 400 ? `${raw.slice(0, 400)}…` : raw
-  } catch (error) {
-    return raw
-  }
-}
-
 async function load({ silent = false } = {}) {
   task.value = await api.tasks.detail(props.id, { silent })
   branchEditor.value = task.value.final_branch_name || ''
@@ -596,27 +591,16 @@ async function load({ silent = false } = {}) {
     // 计划已确认(锁定)时默认渲染预览,编辑期默认原文编辑
     planPreview.value = planLocked.value
   }
-  if (task.value.commit_message && !commitEditor.value) commitEditor.value = task.value.commit_message
+  if (task.value.commit_message && task.value.commit_message !== lastTaskCommitMessage.value) {
+    commitEditor.value = task.value.commit_message
+    lastTaskCommitMessage.value = task.value.commit_message
+  }
   if (task.value.retrospective && !retroEditor.value) retroEditor.value = task.value.retrospective.content
   syncTimers()
-  await ensureRunLogsLoaded()
-}
-
-async function ensureRunLogsLoaded() {
-  const run = runningRun.value || task.value?.runs?.[0]
-  if (!run || logLines.value.length) return
-  logRunId = run.id
-  try {
-    logLines.value = await api.runs.logs(run.id, 0, { silent: true })
-    await nextTick()
-    if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
-  } catch (error) {
-    /* 忽略 */
-  }
 }
 
 function syncTimers() {
-  const running = task.value && runningStatuses.has(task.value.status)
+  const running = task.value && (runningStatuses.has(task.value.status) || !!activeAnyRun.value)
   if (running && !detailTimer) {
     detailTimer = setInterval(() => load({ silent: true }).catch(() => {}), 3000)
   }
@@ -624,36 +608,6 @@ function syncTimers() {
     clearInterval(detailTimer)
     detailTimer = null
   }
-  const run = runningRun.value
-  if (run && logRunId !== run.id) {
-    logRunId = run.id
-    logLines.value = []
-    startLogPolling()
-  }
-  if (!run && logTimer) {
-    clearInterval(logTimer)
-    logTimer = null
-  }
-}
-
-function startLogPolling() {
-  if (logTimer) clearInterval(logTimer)
-  const poll = async () => {
-    if (!logRunId) return
-    try {
-      const afterSeq = logLines.value.length ? logLines.value[logLines.value.length - 1].seq : 0
-      const fresh = await api.runs.logs(logRunId, afterSeq, { silent: true })
-      if (fresh.length) {
-        logLines.value = logLines.value.concat(fresh)
-        await nextTick()
-        if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
-      }
-    } catch (error) {
-      /* 轮询失败忽略,下轮重试 */
-    }
-  }
-  poll()
-  logTimer = setInterval(poll, 2500)
 }
 
 async function generateBranch() {
@@ -680,10 +634,9 @@ async function saveBranch() {
 async function generatePlan() {
   planning.value = true
   try {
-    const plan = await api.tasks.generatePlan(props.id)
-    planEditor.value = plan.plan_content
+    await api.tasks.generatePlan(props.id, planModel.value)
     await load()
-    ElMessage.success('计划已生成,请审阅')
+    ElMessage.success('计划生成任务已入队')
   } finally {
     planning.value = false
   }
@@ -702,13 +655,7 @@ async function confirmPlan() {
 }
 
 async function execute() {
-  await api.tasks.execute(props.id)
-  await load()
-}
-
-async function cancelRun() {
-  if (!runningRun.value) return
-  await api.runs.cancel(runningRun.value.id)
+  await api.tasks.execute(props.id, codeModel.value)
   await load()
 }
 
@@ -725,9 +672,9 @@ async function review() {
 async function aiReview() {
   aiReviewing.value = true
   try {
-    await api.tasks.aiReview(props.id)
+    await api.tasks.aiReview(props.id, reviewModel.value)
     await load()
-    ElMessage.success('AI 只读 Review 已完成')
+    ElMessage.success('AI Review 任务已入队')
   } finally {
     aiReviewing.value = false
   }
@@ -748,7 +695,7 @@ async function cleanupWorktree() {
 }
 
 async function fix() {
-  await api.tasks.fix(props.id, fixFeedback.value)
+  await api.tasks.fix(props.id, fixFeedback.value, fixModel.value)
   fixFeedback.value = ''
   await load()
 }
@@ -776,8 +723,9 @@ async function rejectReview() {
 }
 
 async function generateCommitMessage() {
-  const data = await api.tasks.generateCommitMessage(props.id)
-  commitEditor.value = data.commit_message
+  await api.tasks.generateCommitMessage(props.id, commitModel.value)
+  ElMessage.success('commit message 生成任务已入队')
+  await load()
 }
 
 async function commit() {
@@ -816,6 +764,5 @@ watch(currentStep, () => {
 onMounted(load)
 onBeforeUnmount(() => {
   if (detailTimer) clearInterval(detailTimer)
-  if (logTimer) clearInterval(logTimer)
 })
 </script>

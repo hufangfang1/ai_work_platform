@@ -108,6 +108,13 @@
                     AI 生成
                   </el-button>
                 </div>
+                <AiRunPanel
+                  v-if="repo.descriptionRun"
+                  style="margin-top: 8px"
+                  :run="repo.descriptionRun"
+                  @refresh="pollDescribeRuns"
+                  @retried="(run) => setRepoRun(repo, run)"
+                />
               </el-form-item>
               <el-form-item label="基准分支">
                 <el-input v-model="repo.base_branch" class="mono" />
@@ -156,6 +163,13 @@
                 AI 生成
               </el-button>
             </div>
+            <AiRunPanel
+              v-if="editDescriptionRun"
+              style="margin-top: 8px"
+              :run="editDescriptionRun"
+              @refresh="pollDescribeRuns"
+              @retried="setEditRun"
+            />
           </el-form-item>
           <el-form-item label="仓库地址(自动读取)">
             <el-input :model-value="editForm.repo_url" class="mono" disabled />
@@ -189,9 +203,10 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../services/api'
+import AiRunPanel from '../components/AiRunPanel.vue'
 
 const projects = ref([])
 const loading = ref(false)
@@ -206,6 +221,8 @@ const editVisible = ref(false)
 const editForm = ref(null)
 const describingAll = ref(false)
 const editDescribing = ref(false)
+const editDescriptionRun = ref(null)
+let describeTimer = null
 
 async function load() {
   loading.value = true
@@ -251,6 +268,7 @@ async function scan() {
       test_command: '',
       lint_command: '',
       build_command: '',
+      descriptionRun: null,
     }))
     scanned.value = true
   } finally {
@@ -261,8 +279,9 @@ async function scan() {
 async function describeOne(repo) {
   repo.describing = true
   try {
-    const { description } = await api.projects.describe(repo.path)
-    repo.description = description
+    repo.descriptionRun = await api.projects.describe(repo.path)
+    ElMessage.success('项目描述生成任务已入队')
+    syncDescribeTimer()
   } finally {
     repo.describing = false
   }
@@ -272,10 +291,10 @@ async function describeAll() {
   describingAll.value = true
   try {
     for (const repo of selectedRepos.value) {
-      if (repo.description) continue
+      if (repo.description || repo.descriptionRun) continue
       await describeOne(repo)
     }
-    ElMessage.success('已为待添加项目生成描述')
+    ElMessage.success('已为待添加项目提交描述生成任务')
   } finally {
     describingAll.value = false
   }
@@ -309,6 +328,7 @@ async function addSelected() {
 
 function edit(project) {
   editForm.value = { ...project }
+  editDescriptionRun.value = null
   editVisible.value = true
 }
 
@@ -319,11 +339,72 @@ async function describeEdit() {
   }
   editDescribing.value = true
   try {
-    const { description } = await api.projects.describe(editForm.value.local_path)
-    editForm.value.description = description
-    ElMessage.success('已生成描述')
+    editDescriptionRun.value = await api.projects.describe(editForm.value.local_path)
+    ElMessage.success('项目描述生成任务已入队')
+    syncDescribeTimer()
   } finally {
     editDescribing.value = false
+  }
+}
+
+function setRepoRun(repo, run) {
+  repo.descriptionRun = run
+  syncDescribeTimer()
+}
+
+function setEditRun(run) {
+  editDescriptionRun.value = run
+  syncDescribeTimer()
+}
+
+function applyDescriptionRun(target, run) {
+  if (!run || run.status !== 'succeeded' || !run.output) return
+  try {
+    const data = JSON.parse(run.output)
+    if (data.description) target.description = data.description
+  } catch (error) {
+    /* 保留日志里的原始输出 */
+  }
+}
+
+async function pollDescribeRuns() {
+  const jobs = []
+  selectedRepos.value.forEach((repo) => {
+    if (repo.descriptionRun && ['queued', 'running'].includes(repo.descriptionRun.status)) {
+      jobs.push(api.runs.detail(repo.descriptionRun.id, { silent: true }).then((run) => {
+        repo.descriptionRun = run
+        applyDescriptionRun(repo, run)
+      }))
+    } else {
+      applyDescriptionRun(repo, repo.descriptionRun)
+    }
+  })
+  if (editDescriptionRun.value && ['queued', 'running'].includes(editDescriptionRun.value.status)) {
+    jobs.push(api.runs.detail(editDescriptionRun.value.id, { silent: true }).then((run) => {
+      editDescriptionRun.value = run
+      if (editForm.value) applyDescriptionRun(editForm.value, run)
+    }))
+  } else if (editDescriptionRun.value && editForm.value) {
+    applyDescriptionRun(editForm.value, editDescriptionRun.value)
+  }
+  await Promise.all(jobs)
+  syncDescribeTimer()
+}
+
+function hasRunningDescribeRun() {
+  const repoRunning = selectedRepos.value.some((repo) =>
+    repo.descriptionRun && ['queued', 'running'].includes(repo.descriptionRun.status),
+  )
+  return repoRunning || !!(editDescriptionRun.value && ['queued', 'running'].includes(editDescriptionRun.value.status))
+}
+
+function syncDescribeTimer() {
+  if (hasRunningDescribeRun() && !describeTimer) {
+    describeTimer = setInterval(() => pollDescribeRuns().catch(() => {}), 3000)
+  }
+  if (!hasRunningDescribeRun() && describeTimer) {
+    clearInterval(describeTimer)
+    describeTimer = null
   }
 }
 
@@ -344,4 +425,7 @@ async function remove(project) {
 }
 
 onMounted(load)
+onBeforeUnmount(() => {
+  if (describeTimer) clearInterval(describeTimer)
+})
 </script>

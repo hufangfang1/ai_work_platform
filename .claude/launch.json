@@ -21,6 +21,12 @@
       "port": 5273
     },
     {
+      "name": "frontend-preview-2",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--port", "5373", "--strictPort"],
+      "port": 5373
+    },
+    {
       "name": "worker",
       "runtimeExecutable": "php",
       "runtimeArgs": ["think", "queue:work", "--queue", "ai_dev_code", "--tries", "1", "--sleep", "2", "--timeout", "3600"],

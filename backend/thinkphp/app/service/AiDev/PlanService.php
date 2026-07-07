@@ -6,7 +6,7 @@ use think\facade\Db;
 
 class PlanService
 {
-    public function generate($taskId)
+    public function generate($taskId, $model = '')
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
         if (!$task) {
@@ -21,23 +21,38 @@ class PlanService
             throw new \RuntimeException('需求文档快照缺失');
         }
 
-        $config = (new ConfigService())->model();
-        $modelName = $config ? $config['model_name'] : '';
-        Db::connect()->close();
-        $data = (new ClaudeCliService())->runJson(
-            $this->buildPrompt($doc['content'], $task['scope_summary']),
-            [
+        $this->assertNoRunningPlan($taskId);
+        return (new RunService())->enqueueGeneration((int) $taskId, 'task_plan', [
+            'operation' => 'task_plan',
+            'task_id' => (int) $taskId,
+            'prompt' => $this->buildPrompt($doc['content'], $task['scope_summary']),
+            'options' => [
                 'cwd' => $project['local_path'],
                 'allowed_tools' => 'Read,Glob,Grep',
                 'max_turns' => 25,
                 'timeout' => 600,
-            ]
-        );
+            ],
+        ], 'task:' . (int) $taskId, $model);
+    }
+
+    public function finishRun(array $run, array $data)
+    {
+        $taskId = (int) $run['task_id'];
         $content = isset($data['plan_markdown']) ? trim((string) $data['plan_markdown']) : '';
         if ($content === '') {
             throw new \RuntimeException('claude 未返回 plan_markdown');
         }
-        return $this->saveVersion($taskId, $content, 'ai', $modelName);
+        return $this->saveVersion($taskId, $content, 'ai', $run['model_name']);
+    }
+
+    private function assertNoRunningPlan($taskId)
+    {
+        $runs = (new RunService())->listByTask($taskId);
+        foreach ($runs as $run) {
+            if ($run['run_type'] === 'task_plan' && in_array($run['status'], ['queued', 'running'], true)) {
+                throw new \RuntimeException('已有计划生成任务正在运行');
+            }
+        }
     }
 
     public function saveHumanVersion($taskId, $content)

@@ -79,6 +79,7 @@ class RequirementService
             ->where('requirement_id', $id)->order('version', 'desc')->select()->toArray();
         $requirement['breakdowns'] = Db::name('ai_dev_breakdowns')
             ->where('requirement_id', $id)->order('version', 'desc')->select()->toArray();
+        $requirement['runs'] = (new RunService())->listByTarget('requirement:' . (int) $id, ['requirement_breakdown']);
         $requirement['tasks'] = Db::name('ai_dev_tasks')->alias('t')
             ->leftJoin('ai_dev_projects p', 'p.id = t.project_id')
             ->where('t.requirement_id', $id)

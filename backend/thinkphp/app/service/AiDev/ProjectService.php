@@ -39,7 +39,7 @@ class ProjectService
     /**
      * 让 AI 读取仓库,生成一句话项目描述(供需求拆解判断用)。
      */
-    public function describe($path)
+    public function describe($path, $model = '')
     {
         $path = rtrim((string) $path, '/');
         if ($path === '' || !is_dir($path)) {
@@ -48,12 +48,21 @@ class ProjectService
         $prompt = "阅读当前项目仓库(优先看 README、目录结构、主要源码与依赖清单),"
             . "用一句不超过 40 字的中文概括该项目的用途与技术栈。"
             . "只返回 JSON,结构:{\"description\":\"...\"},不要 JSON 以外的内容。";
-        $data = (new ClaudeCliService())->runJson($prompt, [
-            'cwd' => $path,
-            'timeout' => 180,
-            'max_turns' => 8,
-            'allowed_tools' => 'Read,Glob,Grep',
-        ]);
+        return (new RunService())->enqueueGeneration(0, 'project_description', [
+            'operation' => 'project_description',
+            'path' => $path,
+            'prompt' => $prompt,
+            'options' => [
+                'cwd' => $path,
+                'timeout' => 180,
+                'max_turns' => 8,
+                'allowed_tools' => 'Read,Glob,Grep',
+            ],
+        ], 'project_path:' . sha1($path), $model);
+    }
+
+    public function finishDescribeRun(array $run, array $data)
+    {
         $line = isset($data['description']) ? trim((string) $data['description']) : '';
         $line = trim($line, "\"'` 　");
         if ($line === '') {

@@ -42,7 +42,11 @@ class RequirementController extends BaseController
     public function generateBreakdown($id, BreakdownService $service)
     {
         $projectIds = $this->request->post('project_ids', []);
-        return $this->ok($service->generate((int) $id, is_array($projectIds) ? $projectIds : []));
+        return $this->ok($service->generate(
+            (int) $id,
+            is_array($projectIds) ? $projectIds : [],
+            $this->request->post('model/s', '')
+        ));
     }
 
     public function saveBreakdown($id, BreakdownService $service)

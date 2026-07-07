@@ -57,16 +57,16 @@ export const api = {
     generateBranch: (id) => request('POST', `/tasks/${id}/generate-branch`),
     checkBranch: (id, finalBranchName) =>
       request('POST', `/tasks/${id}/check-branch`, { final_branch_name: finalBranchName }),
-    generatePlan: (id) => request('POST', `/tasks/${id}/generate-plan`),
+    generatePlan: (id, model = '') => request('POST', `/tasks/${id}/generate-plan`, { model }),
     savePlan: (id, planContent) => request('PUT', `/tasks/${id}/plan`, { plan_content: planContent }),
     confirmPlan: (id) => request('POST', `/tasks/${id}/confirm-plan`),
-    execute: (id) => request('POST', `/tasks/${id}/execute`),
+    execute: (id, model = '') => request('POST', `/tasks/${id}/execute`, { model }),
     review: (id) => request('POST', `/tasks/${id}/review`),
-    aiReview: (id) => request('POST', `/tasks/${id}/ai-review`),
+    aiReview: (id, model = '') => request('POST', `/tasks/${id}/ai-review`, { model }),
     approveReview: (id) => request('POST', `/tasks/${id}/approve-review`),
     rejectReview: (id, feedback) => request('POST', `/tasks/${id}/reject-review`, { feedback }),
-    fix: (id, feedback) => request('POST', `/tasks/${id}/fix`, { feedback }),
-    generateCommitMessage: (id) => request('POST', `/tasks/${id}/generate-commit-message`),
+    fix: (id, feedback, model = '') => request('POST', `/tasks/${id}/fix`, { feedback, model }),
+    generateCommitMessage: (id, model = '') => request('POST', `/tasks/${id}/generate-commit-message`, { model }),
     commit: (id, commitMessage) => request('POST', `/tasks/${id}/commit`, { commit_message: commitMessage }),
     push: (id) => request('POST', `/tasks/${id}/push`),
     retrospect: (id) => request('POST', `/tasks/${id}/retrospect`),
@@ -80,6 +80,7 @@ export const api = {
     logs: (runId, afterSeq = 0, options) =>
       request('GET', `/runs/${runId}/logs${qs({ after_seq: afterSeq })}`, undefined, options),
     cancel: (runId) => request('POST', `/runs/${runId}/cancel`),
+    retry: (runId) => request('POST', `/runs/${runId}/retry`),
   },
 
   projects: {
@@ -88,7 +89,7 @@ export const api = {
     update: (id, body) => request('PUT', `/projects/${id}`, body),
     remove: (id) => request('DELETE', `/projects/${id}`),
     scan: () => request('POST', '/projects/scan'),
-    describe: (path) => request('POST', '/projects/describe', { path }),
+    describe: (path, model = '') => request('POST', '/projects/describe', { path, model }),
   },
 
   config: {
@@ -96,6 +97,7 @@ export const api = {
     browseWorkspace: (path) => request('GET', `/workspace-browse${qs({ path })}`),
     saveWorkspace: (roots) => request('PUT', '/workspace-config', { roots }),
     model: () => request('GET', '/model-config'),
+    modelOptions: () => request('GET', '/model-options'),
     saveModel: (body) => request('PUT', '/model-config', body),
     securityRules: () => request('GET', '/security-rules'),
     saveSecurityRules: (rules) => request('PUT', '/security-rules', { rules }),

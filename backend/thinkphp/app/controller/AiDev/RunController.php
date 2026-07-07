@@ -25,4 +25,9 @@ class RunController extends BaseController
     {
         return $this->ok($service->cancel((int) $runId));
     }
+
+    public function retry($runId, RunService $service)
+    {
+        return $this->ok($service->retry((int) $runId), 'queued');
+    }
 }

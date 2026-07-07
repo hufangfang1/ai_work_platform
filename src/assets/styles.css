@@ -43,6 +43,20 @@ html.dark {
   box-sizing: border-box;
 }
 
+/* overflow-x 不能放在 html 上:单轴 hidden 会让 html 的另一轴按 auto 计算,
+   html 自己变成页面滚动容器,Element Plus 弹框的 lock-scroll(锁 body)就失效了 */
+html {
+  width: 100%;
+  max-width: 100%;
+}
+
+body,
+#app {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   color: var(--text);
@@ -86,6 +100,8 @@ textarea {
 /* ---------- 应用壳 ---------- */
 
 .app-shell {
+  width: 100%;
+  max-width: 100vw;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 216px minmax(0, 1fr);
@@ -175,12 +191,15 @@ textarea {
 /* ---------- 页面骨架 ---------- */
 
 .page {
+  width: 100%;
+  min-width: 0;
   display: grid;
   gap: 16px;
   max-width: 1280px;
 }
 
 .page-heading {
+  min-width: 0;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -201,13 +220,24 @@ textarea {
 }
 
 .panel {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--line-soft);
   border-radius: var(--panel-radius);
   padding: 16px;
 }
 
+.panel > *,
+.split > *,
+.flow-step__body > *,
+.detail-layout > *,
+.metric-row > *,
+.card-grid > * {
+  min-width: 0;
+}
+
 .panel-header {
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -221,6 +251,7 @@ textarea {
 }
 
 .toolbar {
+  min-width: 0;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -269,6 +300,7 @@ textarea {
 }
 
 .split {
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
   gap: 16px;
@@ -380,6 +412,8 @@ textarea {
 /* ---------- 代码/日志 ---------- */
 
 .code-editor {
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 6px;
   overflow: hidden;
@@ -387,6 +421,7 @@ textarea {
 }
 
 .code-editor__bar {
+  min-width: 0;
   height: 32px;
   display: flex;
   align-items: center;
@@ -399,6 +434,7 @@ textarea {
 }
 
 .code-editor .el-textarea__inner {
+  max-width: 100%;
   border: 0;
   border-radius: 0;
   box-shadow: none;
@@ -411,6 +447,8 @@ textarea {
 }
 
 .timeline-log {
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 6px;
   max-height: 380px;
@@ -424,6 +462,7 @@ textarea {
 }
 
 .log-line {
+  min-width: 0;
   display: grid;
   grid-template-columns: 44px 96px minmax(0, 1fr);
   gap: 10px;
@@ -433,6 +472,14 @@ textarea {
 
 .log-line code {
   color: #57606c;
+}
+
+.log-line > * {
+  min-width: 0;
+}
+
+.log-line > :last-child {
+  overflow-wrap: anywhere;
 }
 
 .log-line--assistant {
@@ -459,11 +506,13 @@ textarea {
 /* ---------- 流程时间线 ---------- */
 
 .flow {
+  min-width: 0;
   display: grid;
   gap: 12px;
 }
 
 .flow-step {
+  min-width: 0;
   border: 1px solid var(--line-soft);
   border-radius: var(--panel-radius);
   background: var(--surface);
@@ -523,6 +572,7 @@ textarea {
 }
 
 .flow-step__body {
+  min-width: 0;
   padding: 4px 16px 16px;
   border-top: 1px solid var(--line-soft);
   padding-top: 14px;
@@ -550,6 +600,7 @@ textarea {
 /* ---------- 详情布局 ---------- */
 
 .detail-layout {
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
   gap: 16px;
@@ -557,6 +608,7 @@ textarea {
 }
 
 .detail-side {
+  min-width: 0;
   position: sticky;
   top: 20px;
   display: grid;
@@ -565,6 +617,7 @@ textarea {
 }
 
 .side-item {
+  min-width: 0;
   display: grid;
   gap: 4px;
 }
@@ -574,6 +627,7 @@ textarea {
 }
 
 .worktree-box {
+  min-width: 0;
   display: grid;
   gap: 6px;
   padding: 8px;
@@ -597,6 +651,7 @@ textarea {
 
 .task-card,
 .project-card {
+  min-width: 0;
   border: 1px solid var(--line-soft);
   border-radius: var(--panel-radius);
   background: var(--surface-raised);

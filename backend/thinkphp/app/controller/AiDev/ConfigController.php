@@ -4,6 +4,7 @@ namespace app\controller\AiDev;
 
 use app\service\AiDev\ConfigService;
 use app\service\AiDev\MigrationService;
+use app\service\AiDev\ModelProfileService;
 use app\service\AiDev\WorkspaceService;
 
 class ConfigController extends BaseController
@@ -26,6 +27,15 @@ class ConfigController extends BaseController
     public function model(ConfigService $service)
     {
         return $this->ok($service->model());
+    }
+
+    /** 可选模型清单 + 每步默认模型,供前端各 AI 按钮旁的模型下拉框使用 */
+    public function modelOptions(ModelProfileService $service)
+    {
+        return $this->ok([
+            'models' => $service->available(),
+            'step_defaults' => $service->stepDefaults(),
+        ]);
     }
 
     public function saveModel(ConfigService $service)

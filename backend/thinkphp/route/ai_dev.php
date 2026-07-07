@@ -32,6 +32,7 @@ Route::group('api/ai-dev', function () {
     Route::get('runs/:runId', 'AiDev.RunController/read');
     Route::get('runs/:runId/logs', 'AiDev.RunController/logs');
     Route::post('runs/:runId/cancel', 'AiDev.RunController/cancel');
+    Route::post('runs/:runId/retry', 'AiDev.RunController/retry');
 
     Route::post('tasks/:id/review', 'AiDev.TaskController/review');
     Route::post('tasks/:id/ai-review', 'AiDev.TaskController/aiReview');
@@ -56,6 +57,7 @@ Route::group('api/ai-dev', function () {
     Route::get('workspace-browse', 'AiDev.ConfigController/browseWorkspace');
     Route::put('workspace-config', 'AiDev.ConfigController/saveWorkspace');
     Route::get('model-config', 'AiDev.ConfigController/model');
+    Route::get('model-options', 'AiDev.ConfigController/modelOptions');
     Route::put('model-config', 'AiDev.ConfigController/saveModel');
     Route::get('security-rules', 'AiDev.ConfigController/securityRules');
     Route::put('security-rules', 'AiDev.ConfigController/saveSecurityRules');

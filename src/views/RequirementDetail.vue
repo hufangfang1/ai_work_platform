@@ -56,14 +56,23 @@
           </el-button>
         </div>
       </div>
-      <CodeEditor
-        v-if="viewingDoc"
-        :model-value="viewingDoc.content"
-        label="需求文档快照"
-        language="markdown"
-        readonly
-        :rows="10"
-      />
+      <template v-if="viewingDoc">
+        <div class="doc-preview-toolbar">
+          <el-radio-group v-model="docPreview" size="small">
+            <el-radio-button :value="true">预览</el-radio-button>
+            <el-radio-button :value="false">原文</el-radio-button>
+          </el-radio-group>
+        </div>
+        <MarkdownView v-if="docPreview" class="doc-preview" :source="viewingDoc.content" max-height="420px" />
+        <CodeEditor
+          v-else
+          :model-value="viewingDoc.content"
+          label="需求文档快照"
+          language="markdown"
+          readonly
+          :rows="10"
+        />
+      </template>
       <div v-else class="empty-state">还没有需求文档,粘贴飞书文档内容开始</div>
     </div>
 
@@ -90,7 +99,7 @@
             collapse-tags-tooltip
             placeholder="涉及项目(留空=AI 自动判断)"
             style="width: 260px"
-            :disabled="breakingDown || requirement.status === 'closed'"
+            :disabled="breakdownRunning || requirement.status === 'closed'"
           >
             <el-option
               v-for="p in allProjects"
@@ -99,8 +108,9 @@
               :value="p.id"
             />
           </el-select>
+          <ModelPicker v-model="breakdownModel" step="requirement_breakdown" />
           <el-button
-            :loading="breakingDown"
+            :loading="breakdownRunning"
             :disabled="!latestDoc || requirement.status === 'closed'"
             @click="generateBreakdown"
           >
@@ -116,19 +126,35 @@
           </template>
         </div>
       </div>
+      <AiRunPanel
+        v-if="latestBreakdownRun"
+        class="requirement-run-panel"
+        :run="latestBreakdownRun"
+        @refresh="load"
+      />
 
-      <div v-if="breakingDown" class="empty-state">
-        AI 正在阅读需求并拆解项目,约需 1-2 分钟,请勿离开…
+      <div v-if="breakdownRunning" class="empty-state">
+        AI 拆解任务已入队，可查看上方日志；完成后会自动刷新拆解结果。
       </div>
       <template v-else-if="latestBreakdown">
         <div class="split">
-          <CodeEditor
-            v-model="breakdownEditor"
-            label="拆解说明(Markdown,可编辑)"
-            language="markdown"
-            :rows="16"
-            :readonly="!!latestBreakdown.confirmed_at"
-          />
+          <div class="breakdown-doc">
+            <div class="toolbar" style="justify-content: flex-end">
+              <el-radio-group v-model="breakdownPreview" size="small">
+                <el-radio-button :value="true">预览</el-radio-button>
+                <el-radio-button :value="false">{{ latestBreakdown.confirmed_at ? '原文' : '编辑' }}</el-radio-button>
+              </el-radio-group>
+            </div>
+            <MarkdownView v-if="breakdownPreview" :source="breakdownEditor" max-height="520px" />
+            <CodeEditor
+              v-else
+              v-model="breakdownEditor"
+              label="拆解说明(Markdown,可编辑)"
+              language="markdown"
+              :rows="16"
+              :readonly="!!latestBreakdown.confirmed_at"
+            />
+          </div>
           <div style="display: grid; gap: 10px; align-content: start">
             <div class="metric-label">项目分工</div>
             <div
@@ -206,10 +232,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusTag from '../components/StatusTag.vue'
 import CodeEditor from '../components/CodeEditor.vue'
+import AiRunPanel from '../components/AiRunPanel.vue'
+import MarkdownView from '../components/MarkdownView.vue'
+import ModelPicker from '../components/ModelPicker.vue'
 import { api } from '../services/api'
 
 const props = defineProps({ id: { type: String, required: true } })
@@ -218,12 +247,15 @@ const requirement = ref(null)
 const allProjects = ref([])
 const selectedProjectIds = ref([])
 const breakdownEditor = ref('')
+const breakdownModel = ref('')
+const breakdownPreview = ref(true)
+const docPreview = ref(true)
 const viewDocId = ref(null)
 const docDialogVisible = ref(false)
 const savingDoc = ref(false)
-const breakingDown = ref(false)
 const confirming = ref(false)
 const docForm = reactive({ doc_url: '', content: '' })
+let detailTimer = null
 
 const latestDoc = computed(() => (requirement.value?.docs?.length ? requirement.value.docs[0] : null))
 const viewingDoc = computed(() => {
@@ -241,6 +273,16 @@ const breakdownProjects = computed(() => {
     return []
   }
 })
+const activeBreakdownRun = computed(() =>
+  requirement.value?.runs?.find((run) => ['queued', 'running'].includes(run.status)),
+)
+const latestBreakdownRun = computed(() =>
+  activeBreakdownRun.value
+  || requirement.value?.runs?.find((run) => ['failed', 'cancelled'].includes(run.status))
+  || requirement.value?.runs?.find((run) => run.run_type === 'requirement_breakdown')
+  || null,
+)
+const breakdownRunning = computed(() => !!activeBreakdownRun.value)
 
 watch(latestBreakdown, (value) => {
   breakdownEditor.value = value ? value.content : ''
@@ -263,6 +305,17 @@ async function load() {
   // 已有拆解时,回填其涉及项目,方便「重新拆解」时沿用人工范围
   const ids = breakdownProjects.value.map((item) => item.project_id).filter(Boolean)
   if (ids.length) selectedProjectIds.value = ids
+  syncTimer()
+}
+
+function syncTimer() {
+  if (breakdownRunning.value && !detailTimer) {
+    detailTimer = setInterval(() => load().catch(() => {}), 3000)
+  }
+  if (!breakdownRunning.value && detailTimer) {
+    clearInterval(detailTimer)
+    detailTimer = null
+  }
 }
 
 async function saveDoc() {
@@ -283,18 +336,12 @@ async function saveDoc() {
 }
 
 async function generateBreakdown() {
-  breakingDown.value = true
-  try {
-    await api.requirements.generateBreakdown(props.id, { project_ids: selectedProjectIds.value })
-    ElMessage.success(
-      selectedProjectIds.value.length
-        ? '已按所选项目拆解,请核对职责分工'
-        : '拆解完成,请核对项目分工',
-    )
-    await load()
-  } finally {
-    breakingDown.value = false
-  }
+  await api.requirements.generateBreakdown(props.id, {
+    project_ids: selectedProjectIds.value,
+    model: breakdownModel.value,
+  })
+  ElMessage.success('需求拆解任务已入队')
+  await load()
 }
 
 async function saveBreakdown() {
@@ -330,4 +377,38 @@ async function closeRequirement() {
 }
 
 onMounted(load)
+onBeforeUnmount(() => {
+  if (detailTimer) clearInterval(detailTimer)
+})
 </script>
+
+<style scoped>
+.requirement-run-panel {
+  margin-bottom: 12px;
+}
+
+.doc-preview-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.doc-preview :deep(.md-view),
+.breakdown-doc {
+  min-width: 0;
+}
+
+.breakdown-doc {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.doc-preview,
+.breakdown-doc :deep(.md-view) {
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--page-bg);
+}
+</style>

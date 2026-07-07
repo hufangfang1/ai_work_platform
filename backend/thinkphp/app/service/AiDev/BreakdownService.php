@@ -6,7 +6,7 @@ use think\facade\Db;
 
 class BreakdownService
 {
-    public function generate($requirementId, array $projectIds = [])
+    public function generate($requirementId, array $projectIds = [], $model = '')
     {
         $requirement = Db::name('ai_dev_requirements')->where('id', $requirementId)->find();
         if (!$requirement) {
@@ -34,15 +34,28 @@ class BreakdownService
             }
         }
 
-        $config = (new ConfigService())->model();
-        $modelName = $config ? $config['model_name'] : '';
-        // AI 调用可能耗时数分钟,先释放 MySQL 连接,避免 idle 后写回报 Packets out of order。
-        Db::connect()->close();
-        $result = (new ClaudeCliService())->runJson($this->buildPrompt($doc['content'], $candidates, $manual), [
-            'timeout' => 300,
-            'max_turns' => 3,
-        ]);
+        $targetKey = 'requirement:' . (int) $requirementId;
+        $this->assertNoRunningBreakdown($targetKey);
+        return (new RunService())->enqueueGeneration(0, 'requirement_breakdown', [
+            'operation' => 'requirement_breakdown',
+            'requirement_id' => (int) $requirementId,
+            'project_ids' => array_map('intval', $projectIds),
+            'prompt' => $this->buildPrompt($doc['content'], $candidates, $manual),
+            'options' => [
+                'timeout' => 300,
+                'max_turns' => 3,
+            ],
+        ], $targetKey, $model);
+    }
 
+    public function finishRun(array $run, array $result)
+    {
+        $payload = json_decode((string) $run['input'], true);
+        if (!is_array($payload) || empty($payload['requirement_id'])) {
+            throw new \RuntimeException('需求拆解 run 缺少 requirement_id');
+        }
+        $requirementId = (int) $payload['requirement_id'];
+        $projects = Db::name('ai_dev_projects')->where('status', 1)->select()->toArray();
         $markdown = isset($result['breakdown_markdown']) ? $result['breakdown_markdown'] : '';
         $items = isset($result['projects']) && is_array($result['projects']) ? $result['projects'] : [];
         if ($markdown === '' || !$items) {
@@ -63,7 +76,17 @@ class BreakdownService
                 'unmatched' => !isset($nameMap[$projectName]),
             ];
         }
-        return $this->saveVersion($requirementId, $markdown, $normalized, 'ai', $modelName);
+        return $this->saveVersion($requirementId, $markdown, $normalized, 'ai', $run['model_name']);
+    }
+
+    private function assertNoRunningBreakdown($targetKey)
+    {
+        $runs = (new RunService())->listByTarget($targetKey, ['requirement_breakdown']);
+        foreach ($runs as $run) {
+            if (in_array($run['status'], ['queued', 'running'], true)) {
+                throw new \RuntimeException('已有需求拆解任务正在运行');
+            }
+        }
     }
 
     public function saveHuman($requirementId, $content, $projectsJson)

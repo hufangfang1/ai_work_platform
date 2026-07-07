@@ -6,25 +6,140 @@ use think\facade\Db;
 
 class CommitService
 {
-    public function generateMessage($taskId)
+    public function generateMessage($taskId, $model = '')
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
         if (!$task) {
             throw new \RuntimeException('工单不存在');
         }
+        if ($task['status'] !== 'ready_to_commit') {
+            throw new \RuntimeException('只有待提交状态才能生成 commit message');
+        }
         $change = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('created_at', 'desc')->find();
+        if (!$change) {
+            throw new \RuntimeException('没有可生成 commit message 的代码改动');
+        }
+        $this->assertNoRunningMessageRun($taskId);
+        $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
 
-        return [
-            'commit_message' => $this->buildMessage($task, $change),
-        ];
+        return (new RunService())->enqueueGeneration((int) $taskId, 'commit_message', [
+            'operation' => 'commit_message',
+            'task_id' => (int) $taskId,
+            'fallback_message' => $this->buildMessage($task, $change),
+            'prompt' => $this->buildCommitMessagePrompt($task, $project, $change),
+            'options' => [
+                'timeout' => 180,
+                'max_turns' => 3,
+            ],
+        ], 'task:' . (int) $taskId, $model);
+    }
+
+    public function finishMessageRun(array $run, array $data)
+    {
+        $payload = json_decode((string) $run['input'], true);
+        $message = isset($data['commit_message']) ? trim((string) $data['commit_message']) : '';
+        if ($message === '' && is_array($payload) && !empty($payload['fallback_message'])) {
+            $message = trim((string) $payload['fallback_message']);
+        }
+        $task = Db::name('ai_dev_tasks')->where('id', (int) $run['task_id'])->find();
+        if (!$task) {
+            throw new \RuntimeException('工单不存在');
+        }
+        $message = $this->normalizeGeneratedMessage($message, $task);
+        if ($message === '') {
+            throw new \RuntimeException('AI 未返回可用 commit_message');
+        }
+        Db::name('ai_dev_tasks')->where('id', (int) $run['task_id'])->update([
+            'commit_message' => $message,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+        return ['commit_message' => $message];
+    }
+
+    private function assertNoRunningMessageRun($taskId)
+    {
+        $runs = (new RunService())->listByTask($taskId);
+        foreach ($runs as $run) {
+            if ($run['run_type'] === 'commit_message' && in_array($run['status'], ['queued', 'running'], true)) {
+                throw new \RuntimeException('已有 commit message 生成任务正在运行');
+            }
+        }
     }
 
     private function buildMessage(array $task, $change)
     {
         $scope = $this->normalizeScope($task['repo_name']);
         $subject = $this->buildSubject($task, $change);
-        $type = $this->inferType($subject);
+        $type = $this->inferType($subject, $change);
         return "{$type}({$scope}): {$subject}";
+    }
+
+    private function normalizeGeneratedMessage($message, array $task)
+    {
+        $message = trim((string) $message);
+        $message = preg_replace('/^```[A-Za-z0-9_-]*\R?/u', '', $message);
+        $message = preg_replace('/\R?```$/u', '', $message);
+        $message = trim($message, " \t\n\r\0\x0B\"'`");
+        if ($message === '') {
+            return '';
+        }
+        $message = preg_replace('/\s+/u', ' ', $message);
+        $scope = $this->normalizeScope($task['repo_name']);
+        if (preg_match('/^(feat|fix|docs|style|refactor|test|chore)(?:\([^)]+\))?!?:\s*(.+)$/iu', $message, $match)) {
+            $type = strtolower($match[1]);
+            $subject = $this->cleanModelSubject($match[2]);
+            return $subject !== '' ? "{$type}({$scope}): " . $this->trimLine($subject, 60) : '';
+        }
+        $subject = $this->cleanModelSubject($message);
+        if ($subject === '') {
+            return '';
+        }
+        $change = Db::name('ai_dev_changes')->where('task_id', (int) $task['id'])->order('created_at', 'desc')->find();
+        $type = $this->inferType($subject, $change);
+        return "{$type}({$scope}): " . $this->trimLine($subject, 60);
+    }
+
+    private function cleanModelSubject($text)
+    {
+        $subject = trim(strip_tags((string) $text));
+        $subject = preg_replace('/^[-*#\s]+/u', '', $subject);
+        $subject = preg_replace('/\s+/u', ' ', $subject);
+        $subject = $this->trimSubjectEdges($subject);
+        if (
+            $subject === ''
+            || preg_match('/^(测试|test|需求|开发|改动|任务)\s*[#\d一二三四五六七八九十._-]*$/iu', $subject)
+            || preg_match('/^(更新|修改|调整)?代码(改动|变更)?$/u', $subject)
+            || preg_match('/^[#\d一二三四五六七八九十._-]+$/u', $subject)
+            || preg_match('/^```[A-Za-z0-9_-]*$/u', $subject)
+            || $this->isMetaSummaryLine($subject)
+        ) {
+            return '';
+        }
+        return $subject;
+    }
+
+    private function buildCommitMessagePrompt(array $task, $project, array $change)
+    {
+        $scope = $this->normalizeScope($task['repo_name']);
+        $files = $this->changedFiles($change);
+        $diff = mb_substr((string) $change['git_diff_snapshot'], 0, 60000);
+        $summary = trim((string) $change['diff_summary']);
+        $projectName = $project && !empty($project['name']) ? $project['name'] : $task['repo_name'];
+
+        return "你是资深工程师，请根据本次代码 diff 生成一个准确的 Conventional Commit message。\n"
+            . "只返回 JSON，不要 Markdown，不要代码块，结构固定为:{\"commit_message\":\"type(scope): subject\"}\n"
+            . "要求:\n"
+            . "- type 只能是 feat/fix/docs/style/refactor/test/chore 之一\n"
+            . "- scope 必须使用: {$scope}\n"
+            . "- subject 使用中文，简洁描述真实代码改动，不要使用需求标题、工单标题或占位词\n"
+            . "- 不要输出“测试 1”“需求 1”“更新代码”这类泛化描述\n"
+            . "- 如果只是测试文件变化，type 用 test；否则不要因为验证步骤里有测试就用 test\n\n"
+            . "# 项目\n" . $projectName . "\n\n"
+            . "# 工单标题\n" . $task['title'] . "\n\n"
+            . "# 本项目职责\n" . ($task['scope_summary'] !== '' ? $task['scope_summary'] : '未填写') . "\n\n"
+            . "# AI 改动摘要\n" . ($summary !== '' ? $summary : '无') . "\n\n"
+            . "# 变更文件\n- " . implode("\n- ", $files ?: ['无']) . "\n\n"
+            . "# git diff\n" . $diff . "\n";
     }
 
     private function normalizeScope($repoName)
@@ -36,11 +151,15 @@ class CommitService
     private function buildSubject(array $task, $change)
     {
         $candidates = [];
-        if (!empty($task['scope_summary'])) {
-            $candidates[] = $this->firstUsefulSentence($task['scope_summary']);
-        }
         if ($change) {
             $candidates = array_merge($candidates, $this->summaryCandidates((string) $change['diff_summary']));
+            $fileSubject = $this->subjectFromChangedFiles($change);
+            if ($fileSubject !== '') {
+                $candidates[] = $fileSubject;
+            }
+        }
+        if (!empty($task['scope_summary'])) {
+            $candidates[] = $this->firstUsefulSentence($task['scope_summary']);
         }
         $candidates[] = $this->normalizeTitle($task['title'], $task['repo_name']);
 
@@ -63,7 +182,7 @@ class CommitService
         return preg_replace('/\s+/u', ' ', $subject);
     }
 
-    private function inferType($subject)
+    private function inferType($subject, $change = null)
     {
         if (preg_match('/修复|bug|错误|异常|失败|问题|fix/i', $subject)) {
             return 'fix';
@@ -71,7 +190,7 @@ class CommitService
         if (preg_match('/文档|说明|docs?/i', $subject)) {
             return 'docs';
         }
-        if (preg_match('/测试|test|spec/i', $subject)) {
+        if ($this->isTestOnlyChange($change) || preg_match('/测试|test|spec/i', $subject)) {
             return 'test';
         }
         if (preg_match('/重构|refactor/i', $subject)) {
@@ -107,6 +226,40 @@ class CommitService
         return $candidates;
     }
 
+    private function subjectFromChangedFiles($change)
+    {
+        $files = $this->changedFiles($change);
+        if (!$files) {
+            return '';
+        }
+        $joined = implode("\n", $files);
+        if (preg_match('/GenerationExecutorService|AiDevGenerationJob|enqueueGeneration|AiRunPanel|RequirementDetail|TaskDetail|ProjectConfig/u', $joined)) {
+            return '异步化 AI 生成任务流程';
+        }
+        if (preg_match('/CommitService\.php$/m', $joined)) {
+            return '优化 commit message 生成逻辑';
+        }
+
+        $groups = [
+            '前端页面' => '/^src\/views\//',
+            '前端组件' => '/^src\/components\//',
+            '后端服务' => '/backend\/thinkphp\/app\/service\//',
+            '后端任务' => '/backend\/thinkphp\/app\/job\//',
+            '接口路由' => '/backend\/thinkphp\/route\//',
+        ];
+        foreach ($groups as $label => $pattern) {
+            $matched = array_values(array_filter($files, function ($file) use ($pattern) {
+                return preg_match($pattern, $file);
+            }));
+            if (count($matched) >= max(2, (int) ceil(count($files) / 2))) {
+                return '更新' . $label . '逻辑';
+            }
+        }
+
+        $name = basename($files[0]);
+        return count($files) === 1 ? '更新 ' . $name : '更新代码改动';
+    }
+
     private function isMetaSummaryLine($line)
     {
         if (preg_match('/^```[A-Za-z0-9_-]*$/u', $line) || $line === '```') {
@@ -133,7 +286,7 @@ class CommitService
         if (strpos($line, '|') !== false) {
             return true;
         }
-        if (preg_match('/(无需修改|与计划一致|文件|类型|说明|Review|验证|检查|diff|提交依据|复盘)/iu', $line)) {
+        if (preg_match('/(无需修改|与计划一致|文件|类型|Review|验证|检查|diff|提交依据|复盘)/iu', $line)) {
             return true;
         }
         if (preg_match('/(响应体|响应参数|返回参数|返回结果|请求参数|接口示例|调用示例|字段|顶层|errno|success|msg|data)/iu', $line)) {
@@ -150,7 +303,9 @@ class CommitService
         $subject = trim(strip_tags((string) $text));
         if (
             $subject === ''
-            || preg_match('/^(测试|test|需求|开发|改动|任务)$/iu', $subject)
+            || preg_match('/^(测试|test|需求|开发|改动|任务)\s*[#\d一二三四五六七八九十._-]*$/iu', $subject)
+            || preg_match('/^(更新|修改|调整)?代码(改动|变更)?$/u', $subject)
+            || preg_match('/^[#\d一二三四五六七八九十._-]+$/u', $subject)
             || preg_match('/^```[A-Za-z0-9_-]*$/u', $subject)
             || $this->isMetaSummaryLine($subject)
         ) {
@@ -161,7 +316,7 @@ class CommitService
         $subject = preg_replace('/^(本次|此次)?(代码)?(主要)?(改动|变更|实现内容)[：:，,\s]*/u', '', $subject);
         $subject = preg_replace('/^在.+?(框架|项目|系统|模块)(内|中)?/u', '', $subject);
         $subject = preg_replace('/\s+/u', ' ', $subject);
-        $subject = trim($subject, " \t\n\r\0\x0B。；;，,");
+        $subject = $this->trimSubjectEdges($subject);
         if ($subject === '' || $this->isMetaSummaryLine($subject)) {
             return '';
         }
@@ -178,7 +333,40 @@ class CommitService
             $subject = $match[0];
         }
         $subject = preg_replace('/^(新建|添加|实现)/u', '新增', $subject);
-        return trim($subject, " \t\n\r\0\x0B。；;，,");
+        return $this->trimSubjectEdges($subject);
+    }
+
+    private function trimSubjectEdges($text)
+    {
+        return preg_replace('/^[\s。；;，,]+|[\s。；;，,]+$/u', '', (string) $text);
+    }
+
+    private function changedFiles($change)
+    {
+        if (!$change || empty($change['changed_files'])) {
+            return [];
+        }
+        $files = json_decode((string) $change['changed_files'], true);
+        if (!is_array($files)) {
+            return [];
+        }
+        return array_values(array_filter(array_map(function ($file) {
+            return trim((string) $file);
+        }, $files)));
+    }
+
+    private function isTestOnlyChange($change)
+    {
+        $files = $this->changedFiles($change);
+        if (!$files) {
+            return false;
+        }
+        foreach ($files as $file) {
+            if (!preg_match('/(^|\/)(__tests__|tests?|spec)\/|(\.|-)(test|spec)\.[A-Za-z0-9]+$/i', $file)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private function specificSubject($subject)
