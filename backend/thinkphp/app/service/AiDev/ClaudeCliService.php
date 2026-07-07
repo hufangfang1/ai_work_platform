@@ -31,12 +31,16 @@ class ClaudeCliService
 
         $output = '';
         $error = '';
+        $exitCode = -1;
         $startedAt = time();
         while (true) {
             $output .= (string) stream_get_contents($pipes[1]);
             $error .= (string) stream_get_contents($pipes[2]);
             $status = proc_get_status($process);
             if (!$status['running']) {
+                // 退出码必须在此刻从 proc_get_status 读取:一旦进程被 waitpid 回收,
+                // 后续 proc_close() 只会返回 -1,不能用它判断成败。
+                $exitCode = $status['exitcode'];
                 break;
             }
             if (time() - $startedAt > $timeout) {
@@ -50,7 +54,7 @@ class ClaudeCliService
         $error .= (string) stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
-        $exitCode = proc_close($process);
+        proc_close($process);
 
         if ($exitCode !== 0 || trim($output) === '') {
             throw new \RuntimeException('claude 调用失败: ' . ($error !== '' ? trim($error) : '空输出(exit ' . $exitCode . ')'));
