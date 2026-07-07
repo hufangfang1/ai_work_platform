@@ -35,6 +35,32 @@ class ProjectService
         return Db::name('ai_dev_projects')->where('id', $id)->find();
     }
 
+    /**
+     * 让 AI 读取仓库,生成一句话项目描述(供需求拆解判断用)。
+     */
+    public function describe($path)
+    {
+        $path = rtrim((string) $path, '/');
+        if ($path === '' || !is_dir($path)) {
+            throw new \RuntimeException('项目目录不存在: ' . $path);
+        }
+        $prompt = "阅读当前项目仓库(优先看 README、目录结构、主要源码与依赖清单),"
+            . "用一句不超过 40 字的中文概括该项目的用途与技术栈。"
+            . "只输出这一句话,不要任何解释、标题或引号。";
+        $text = (new ClaudeCliService())->runText($prompt, [
+            'cwd' => $path,
+            'timeout' => 180,
+            'max_turns' => 8,
+            'allowed_tools' => 'Read,Glob,Grep',
+        ]);
+        $line = trim((string) strtok($text, "\n"));
+        $line = trim($line, "\"'` 　");
+        if ($line === '') {
+            throw new \RuntimeException('AI 未能生成描述,请重试或手动填写');
+        }
+        return ['description' => $line];
+    }
+
     public function update($id, array $input)
     {
         $data = $this->filter($input);

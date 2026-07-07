@@ -17,6 +17,11 @@ class ProjectController extends BaseController
         return $this->ok($service->scan());
     }
 
+    public function describe(ProjectService $service)
+    {
+        return $this->ok($service->describe($this->request->post('path/s', '')));
+    }
+
     public function save(ProjectService $service)
     {
         return $this->ok($service->create($this->request->post()), 'created');

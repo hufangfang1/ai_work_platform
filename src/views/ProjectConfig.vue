@@ -83,7 +83,13 @@
 
         <template v-if="selectedRepos.length">
           <el-divider style="margin: 0" />
-          <div class="metric-label">补充项目信息({{ selectedRepos.length }} 个待添加)</div>
+          <div class="panel-header" style="padding: 0">
+            <div class="metric-label">补充项目信息({{ selectedRepos.length }} 个待添加)</div>
+            <el-button size="small" :loading="describingAll" @click="describeAll">
+              <el-icon><MagicStick /></el-icon>
+              AI 生成全部描述
+            </el-button>
+          </div>
           <div v-for="repo in selectedRepos" :key="repo.path" class="panel" style="background: var(--surface-raised)">
             <div class="card-title" style="margin-bottom: 10px">
               <span>{{ repo.name }}</span>
@@ -91,7 +97,17 @@
             </div>
             <div class="form-grid">
               <el-form-item label="项目描述(供 AI 拆解判断)">
-                <el-input v-model="repo.description" placeholder="例如:运营中台 PHP API" />
+                <div class="toolbar" style="width: 100%">
+                  <el-input
+                    v-model="repo.description"
+                    style="flex: 1"
+                    placeholder="点右侧「AI 生成」自动填写,或手动输入"
+                  />
+                  <el-button :loading="repo.describing" @click="describeOne(repo)">
+                    <el-icon><MagicStick /></el-icon>
+                    AI 生成
+                  </el-button>
+                </div>
               </el-form-item>
               <el-form-item label="基准分支">
                 <el-input v-model="repo.base_branch" class="mono" />
@@ -182,6 +198,7 @@ const scanResults = ref([])
 const selectedRepos = ref([])
 const editVisible = ref(false)
 const editForm = ref(null)
+const describingAll = ref(false)
 
 async function load() {
   loading.value = true
@@ -221,6 +238,7 @@ async function scan() {
     scanResults.value = results.map((repo) => ({
       ...repo,
       description: '',
+      describing: false,
       base_branch: repo.current_branch === 'HEAD' ? 'main' : repo.current_branch || 'main',
       branch_prefix: 'future/',
       test_command: '',
@@ -230,6 +248,29 @@ async function scan() {
     scanned.value = true
   } finally {
     scanning.value = false
+  }
+}
+
+async function describeOne(repo) {
+  repo.describing = true
+  try {
+    const { description } = await api.projects.describe(repo.path)
+    repo.description = description
+  } finally {
+    repo.describing = false
+  }
+}
+
+async function describeAll() {
+  describingAll.value = true
+  try {
+    for (const repo of selectedRepos.value) {
+      if (repo.description) continue
+      await describeOne(repo)
+    }
+    ElMessage.success('已为待添加项目生成描述')
+  } finally {
+    describingAll.value = false
   }
 }
 

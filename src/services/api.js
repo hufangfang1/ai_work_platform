@@ -84,6 +84,7 @@ export const api = {
     update: (id, body) => request('PUT', `/projects/${id}`, body),
     remove: (id) => request('DELETE', `/projects/${id}`),
     scan: () => request('POST', '/projects/scan'),
+    describe: (path) => request('POST', '/projects/describe', { path }),
   },
 
   config: {

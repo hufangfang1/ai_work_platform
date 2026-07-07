@@ -44,6 +44,7 @@ Route::group('api/ai-dev', function () {
     Route::get('projects', 'AiDev.ProjectController/index');
     Route::post('projects', 'AiDev.ProjectController/save');
     Route::post('projects/scan', 'AiDev.ProjectController/scan');
+    Route::post('projects/describe', 'AiDev.ProjectController/describe');
     Route::put('projects/:id', 'AiDev.ProjectController/update');
     Route::delete('projects/:id', 'AiDev.ProjectController/delete');
 
