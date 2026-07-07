@@ -16,6 +16,9 @@ return [
             'select' => env('redis.select', 0),
             'timeout' => 0,
             'persistent' => false,
+            // AI 编码任务耗时远超默认 60 秒；过短会导致任务被重复投递、
+            // 第二次投递因 --tries 1 直接把 run 覆盖成"队列任务执行失败"
+            'retry_after' => 3600,
         ],
     ],
 ];

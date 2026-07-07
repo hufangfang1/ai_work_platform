@@ -53,6 +53,7 @@ export const api = {
     create: (body) => request('POST', '/tasks', body),
     update: (id, body) => request('PUT', `/tasks/${id}`, body),
     terminate: (id) => request('POST', `/tasks/${id}/terminate`),
+    cleanupWorktree: (id) => request('POST', `/tasks/${id}/cleanup-worktree`),
     generateBranch: (id) => request('POST', `/tasks/${id}/generate-branch`),
     checkBranch: (id, finalBranchName) =>
       request('POST', `/tasks/${id}/check-branch`, { final_branch_name: finalBranchName }),
@@ -61,6 +62,9 @@ export const api = {
     confirmPlan: (id) => request('POST', `/tasks/${id}/confirm-plan`),
     execute: (id) => request('POST', `/tasks/${id}/execute`),
     review: (id) => request('POST', `/tasks/${id}/review`),
+    aiReview: (id) => request('POST', `/tasks/${id}/ai-review`),
+    approveReview: (id) => request('POST', `/tasks/${id}/approve-review`),
+    rejectReview: (id, feedback) => request('POST', `/tasks/${id}/reject-review`, { feedback }),
     fix: (id, feedback) => request('POST', `/tasks/${id}/fix`, { feedback }),
     generateCommitMessage: (id) => request('POST', `/tasks/${id}/generate-commit-message`),
     commit: (id, commitMessage) => request('POST', `/tasks/${id}/commit`, { commit_message: commitMessage }),
@@ -89,10 +93,15 @@ export const api = {
 
   config: {
     workspace: () => request('GET', '/workspace-config'),
+    browseWorkspace: (path) => request('GET', `/workspace-browse${qs({ path })}`),
     saveWorkspace: (roots) => request('PUT', '/workspace-config', { roots }),
     model: () => request('GET', '/model-config'),
     saveModel: (body) => request('PUT', '/model-config', body),
     securityRules: () => request('GET', '/security-rules'),
     saveSecurityRules: (rules) => request('PUT', '/security-rules', { rules }),
+    exportConfig: () => request('GET', '/config-export'),
+    importConfig: (body) => request('POST', '/config-import', body),
+    migrationStatus: () => request('GET', '/migration-status'),
+    migrate: () => request('POST', '/migrate'),
   },
 }

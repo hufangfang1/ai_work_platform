@@ -1,0 +1,2 @@
+-- baseline: migration runner creates ai_dev_schema_migrations automatically.
+-- Keep this file as the first tracked version so future schema changes can be ordered.

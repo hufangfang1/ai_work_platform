@@ -90,6 +90,7 @@ class TaskService
             return null;
         }
         $task['project'] = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
+        $task['worktree'] = $task['project'] ? (new WorktreeService())->status($task['project'], $task) : null;
         $requirement = Db::name('ai_dev_requirements')->where('id', $task['requirement_id'])->find();
         $task['requirement'] = $requirement ? ['id' => $requirement['id'], 'title' => $requirement['title'], 'doc_url' => $requirement['doc_url']] : null;
         $doc = Db::name('ai_dev_requirement_docs')->where('id', $task['doc_version_id'])->find();
@@ -128,7 +129,35 @@ class TaskService
 
     public function terminate($id)
     {
+        $task = Db::name('ai_dev_tasks')->where('id', $id)->find();
+        if ($task) {
+            $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
+            if ($project) {
+                try {
+                    (new WorktreeService())->remove($project, $task, true);
+                } catch (\Throwable $e) {
+                    // 终止工单以状态关闭为主，worktree 清理失败时不阻断关闭流程。
+                }
+            }
+        }
         $this->updateStatus($id, 'terminated');
         return $this->detail($id);
+    }
+
+    public function cleanupWorktree($id)
+    {
+        $task = Db::name('ai_dev_tasks')->where('id', $id)->find();
+        if (!$task) {
+            throw new \RuntimeException('工单不存在');
+        }
+        $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
+        if (!$project) {
+            throw new \RuntimeException('项目不存在');
+        }
+        $removed = (new WorktreeService())->remove($project, $task, true);
+        return [
+            'removed' => $removed,
+            'worktree' => (new WorktreeService())->status($project, $task),
+        ];
     }
 }

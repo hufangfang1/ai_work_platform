@@ -13,6 +13,18 @@
       "runtimeArgs": ["think", "run", "-p", "8000"],
       "cwd": "backend/thinkphp",
       "port": 8000
+    },
+    {
+      "name": "frontend-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--port", "5273", "--strictPort"],
+      "port": 5273
+    },
+    {
+      "name": "worker",
+      "runtimeExecutable": "php",
+      "runtimeArgs": ["think", "queue:work", "--queue", "ai_dev_code", "--tries", "1", "--sleep", "2", "--timeout", "3600"],
+      "cwd": "backend/thinkphp"
     }
   ]
 }

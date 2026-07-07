@@ -38,6 +38,11 @@ class TaskController extends BaseController
         return $this->ok($service->terminate((int) $id));
     }
 
+    public function cleanupWorktree($id, TaskService $service)
+    {
+        return $this->ok($service->cleanupWorktree((int) $id));
+    }
+
     public function generateBranch($id, BranchService $service)
     {
         return $this->ok($service->generateForTask((int) $id));
@@ -71,6 +76,21 @@ class TaskController extends BaseController
     public function review($id, ReviewService $service)
     {
         return $this->ok($service->review((int) $id));
+    }
+
+    public function aiReview($id, ReviewService $service)
+    {
+        return $this->ok($service->aiReview((int) $id));
+    }
+
+    public function approveReview($id, ReviewService $service)
+    {
+        return $this->ok($service->approve((int) $id));
+    }
+
+    public function rejectReview($id, ReviewService $service)
+    {
+        return $this->ok($service->reject((int) $id, $this->request->post('feedback/s', '')));
     }
 
     public function fix($id, RunService $service)

@@ -23,7 +23,8 @@ class PlanService
 
         $config = (new ConfigService())->model();
         $modelName = $config ? $config['model_name'] : '';
-        $content = (new ClaudeCliService())->runText(
+        Db::connect()->close();
+        $data = (new ClaudeCliService())->runJson(
             $this->buildPrompt($doc['content'], $task['scope_summary']),
             [
                 'cwd' => $project['local_path'],
@@ -32,6 +33,10 @@ class PlanService
                 'timeout' => 600,
             ]
         );
+        $content = isset($data['plan_markdown']) ? trim((string) $data['plan_markdown']) : '';
+        if ($content === '') {
+            throw new \RuntimeException('claude 未返回 plan_markdown');
+        }
         return $this->saveVersion($taskId, $content, 'ai', $modelName);
     }
 
@@ -80,7 +85,7 @@ class PlanService
     private function buildPrompt($docContent, $scopeSummary)
     {
         return "你在该项目代码库根目录,可用 Read/Glob/Grep 阅读代码(禁止修改任何文件)。"
-            . "为以下需求产出本项目的开发计划,直接输出 Markdown,不要输出计划以外的内容。\n"
+            . "为以下需求产出本项目的开发计划。只返回 JSON,结构:{\"plan_markdown\":\"...\"},不要 JSON 以外的内容。\n"
             . "计划必须引用真实存在的文件路径;结构固定为:\n"
             . "## 需求理解 / ## 涉及模块与文件 / ## 实施步骤 / ## 配置变更 / ## SQL 变更 / ## 验证计划 / ## 风险点\n\n"
             . "# 需求文档(已脱敏)\n" . $docContent . "\n\n"

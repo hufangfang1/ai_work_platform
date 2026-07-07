@@ -37,7 +37,7 @@ class AiDevCodeJob
         }
         $runService = new RunService();
         $run = $runService->detail($runId);
-        $runService->finish($runId, 'failed', '', '队列任务执行失败');
+        $runService->finish($runId, 'failed', '', $run && $run['error'] ? $run['error'] : '队列任务执行失败');
         if ($run) {
             (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
         }

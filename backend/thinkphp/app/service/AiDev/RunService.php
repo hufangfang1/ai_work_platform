@@ -10,8 +10,8 @@ class RunService
     public function enqueueCoding($taskId)
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
-        if (!$task || $task['status'] !== 'plan_confirmed') {
-            throw new \RuntimeException('只有已确认计划的工单才能执行');
+        if (!$task || !in_array($task['status'], ['plan_confirmed', 'failed'], true)) {
+            throw new \RuntimeException('只有已确认计划或执行失败的工单才能开始 AI 修改');
         }
         $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->whereNotNull('confirmed_at')->order('version', 'desc')->find();
         if (!$plan) {
@@ -76,6 +76,7 @@ class RunService
 
     public function appendLog($runId, $eventType, $content)
     {
+        $content = $this->sanitizeLogContent($content);
         $seq = (int) Db::name('ai_dev_run_logs')->where('run_id', $runId)->max('seq') + 1;
         Db::name('ai_dev_run_logs')->insert([
             'run_id' => $runId,
@@ -129,10 +130,31 @@ class RunService
             $prompt .= "# 本项目职责（来自需求拆解）\n" . $task['scope_summary'] . "\n\n";
         }
         $prompt .= "# 已确认的开发计划\n" . $plan['plan_content'] . "\n\n";
-        $prompt .= "# 约束\n- 只修改计划中涉及的模块和文件\n- 不要执行 git commit / git push\n- 不要修改与本需求无关的文件\n- 完成后输出：改动文件列表、改动摘要、建议的验证步骤\n";
+        $prompt .= "# 约束\n- 只修改计划中涉及的模块和文件\n- 不要执行 git commit / git push\n- 不要修改与本需求无关的文件\n"
+            . "- 完成后只输出 JSON,不要 Markdown,不要代码块,结构固定为:"
+            . "{\"summary_subject\":\"一句话说明这次代码改了什么\",\"change_summary\":[\"改动点\"],"
+            . "\"changed_files\":[\"文件路径\"],\"verification_steps\":[\"建议验证步骤\"]}\n";
         if ($feedback !== '') {
             $prompt .= "\n# Review 反馈\n" . $feedback . "\n";
         }
         return $prompt;
+    }
+
+    private function sanitizeLogContent($content)
+    {
+        $content = (string) $content;
+        if ($content === '') {
+            return '';
+        }
+        if (function_exists('iconv')) {
+            $converted = @iconv('UTF-8', 'UTF-8//IGNORE', $content);
+            if ($converted !== false) {
+                $content = $converted;
+            }
+        }
+        if (strlen($content) > 500000) {
+            $content = substr($content, 0, 500000) . "\n...(log truncated)";
+        }
+        return $content;
     }
 }

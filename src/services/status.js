@@ -6,7 +6,7 @@ export const taskStatuses = [
   { value: 'coding', label: 'AI 开发中', type: 'warning' },
   { value: 'code_changed', label: '待 Review', type: 'warning' },
   { value: 'reviewing', label: 'Review 中', type: 'warning' },
-  { value: 'review_passed', label: 'Review 通过', type: 'success' },
+  { value: 'review_passed', label: '待人工 Review', type: 'primary' },
   { value: 'review_failed', label: 'Review 未通过', type: 'danger' },
   { value: 'fixing', label: '继续修改中', type: 'warning' },
   { value: 'ready_to_commit', label: '待提交', type: 'primary' },

@@ -73,7 +73,15 @@
             </div>
             <div v-if="planning" class="empty-state">AI 正在阅读项目代码生成计划,约需 1-3 分钟…</div>
             <template v-else-if="latestPlan">
+              <div class="toolbar" style="justify-content: flex-end">
+                <el-radio-group v-model="planPreview" size="small">
+                  <el-radio-button :value="true">预览</el-radio-button>
+                  <el-radio-button :value="false">{{ planLocked ? '原文' : '编辑' }}</el-radio-button>
+                </el-radio-group>
+              </div>
+              <MarkdownView v-if="planPreview" :source="planEditor" max-height="480px" />
               <CodeEditor
+                v-else
                 v-model="planEditor"
                 label="开发计划(Markdown)"
                 language="markdown"
@@ -103,7 +111,7 @@
           <div class="flow-step__head" @click="toggleStep(2)">
             <span class="flow-step__index">2</span>
             <span class="flow-step__title">AI 执行</span>
-            <span class="flow-step__hint">{{ runningRun ? '执行中,实时日志' : 'Claude Code 修改代码' }}</span>
+            <span class="flow-step__hint">{{ runHint }}</span>
           </div>
           <div v-if="isOpen(2)" class="flow-step__body">
             <div class="toolbar">
@@ -127,6 +135,13 @@
                 <code>#{{ log.seq }}</code>
                 <span class="log-type">{{ log.event_type }}</span>
                 <span style="white-space: pre-wrap; word-break: break-word">{{ logText(log) }}</span>
+              </div>
+            </div>
+            <div v-else-if="runningRun?.status === 'queued'" class="muted">
+              <div>任务已入队，等待 Worker 处理…</div>
+              <div class="mono" style="margin-top: 8px; font-size: 12px; line-height: 1.6">
+                若长时间无日志，请在本机启动 Worker：<br />
+                cd backend/thinkphp && php think queue:work --queue ai_dev_code
               </div>
             </div>
             <div v-else class="muted">暂无执行日志</div>
@@ -161,19 +176,38 @@
           </div>
           <div v-if="isOpen(3)" class="flow-step__body">
             <template v-if="latestChange">
+              <div v-if="latestChange.diff_summary">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px">
+                  <div class="metric-label">AI 改动说明</div>
+                  <el-radio-group v-model="summaryRaw" size="small">
+                    <el-radio-button :value="false">渲染</el-radio-button>
+                    <el-radio-button :value="true">原文</el-radio-button>
+                  </el-radio-group>
+                </div>
+                <pre v-if="summaryRaw" class="mono" style="white-space: pre-wrap; margin: 0">{{ latestChange.diff_summary }}</pre>
+                <MarkdownView v-else :source="latestChange.diff_summary" max-height="420px" />
+              </div>
               <div>
                 <div class="metric-label" style="margin-bottom: 6px">变更文件</div>
                 <div v-for="file in changedFiles" :key="file" class="mono" style="padding: 2px 0">
                   {{ file }}
                 </div>
               </div>
-              <CodeEditor
-                :model-value="latestChange.git_diff_snapshot || ''"
-                label="git diff"
-                language="diff"
-                readonly
-                :rows="18"
-              />
+              <div class="diff-entry">
+                <div>
+                  <div class="metric-label">git diff</div>
+                  <div class="muted">完整代码差异已收起到弹框中查看</div>
+                </div>
+                <el-button
+                  type="primary"
+                  plain
+                  :disabled="!latestChange.git_diff_snapshot"
+                  @click="diffDialogVisible = true"
+                >
+                  <el-icon><Files /></el-icon>
+                  查看 git diff
+                </el-button>
+              </div>
             </template>
             <div v-else class="muted">AI 执行完成后展示改动</div>
           </div>
@@ -191,17 +225,24 @@
               <el-button
                 type="primary"
                 :loading="reviewing"
-                :disabled="task.status !== 'code_changed'"
+                :disabled="!['code_changed', 'review_failed'].includes(task.status)"
                 @click="review"
               >
-                发起 Review
+                运行自动检查
+              </el-button>
+              <el-button
+                :loading="aiReviewing"
+                :disabled="!['code_changed', 'review_passed', 'review_failed'].includes(task.status)"
+                @click="aiReview"
+              >
+                AI 只读 Review
               </el-button>
             </div>
             <template v-if="reviewResult">
               <div class="metric-row" style="grid-template-columns: repeat(2, 1fr)">
                 <div class="metric">
                   <div class="metric-label">结论</div>
-                  <div class="metric-value" :class="latestReview.status === 'failed' ? 'danger-text' : 'success-text'">
+                  <div class="metric-value" :class="latestReview.status === 'fail' ? 'danger-text' : 'success-text'">
                     {{ latestReview.status }}
                   </div>
                 </div>
@@ -225,6 +266,37 @@
                 </el-collapse-item>
               </el-collapse>
             </template>
+            <div
+              v-if="['review_passed', 'ready_to_commit'].includes(task.status)"
+              style="display: grid; gap: 8px"
+            >
+              <el-alert
+                :closable="false"
+                :type="task.status === 'review_passed' ? 'warning' : 'success'"
+                :title="task.status === 'review_passed'
+                  ? '自动检查通过,请打开 git diff 核对后确认放行或驳回'
+                  : '人工 Review 已通过,可在下方提交;如需反悔可填写意见驳回'"
+              />
+              <el-input
+                v-model="rejectFeedback"
+                type="textarea"
+                :rows="3"
+                placeholder="驳回时必填:说明需要修改的问题,驳回后可让 AI 按此意见继续修改"
+              />
+              <div class="toolbar">
+                <el-button
+                  v-if="task.status === 'review_passed'"
+                  type="primary"
+                  :loading="approving"
+                  @click="approveReview"
+                >
+                  人工 Review 通过
+                </el-button>
+                <el-button type="danger" plain :disabled="!rejectFeedback.trim()" @click="rejectReview">
+                  驳回
+                </el-button>
+              </div>
+            </div>
             <div v-if="['review_failed', 'code_changed'].includes(task.status)" style="display: grid; gap: 8px">
               <el-input
                 v-model="fixFeedback"
@@ -292,7 +364,14 @@
               </el-button>
               <el-button type="primary" :disabled="!retroEditor.trim()" @click="saveRetro">保存复盘</el-button>
             </div>
-            <CodeEditor v-model="retroEditor" label="复盘(Markdown)" language="markdown" :rows="14" />
+            <div class="toolbar" style="justify-content: flex-end">
+              <el-radio-group v-model="retroPreview" size="small">
+                <el-radio-button :value="true">预览</el-radio-button>
+                <el-radio-button :value="false">编辑</el-radio-button>
+              </el-radio-group>
+            </div>
+            <MarkdownView v-if="retroPreview" :source="retroEditor" max-height="420px" />
+            <CodeEditor v-else v-model="retroEditor" label="复盘(Markdown)" language="markdown" :rows="14" />
           </div>
         </div>
       </div>
@@ -322,6 +401,21 @@
             </div>
           </div>
           <div class="side-item">
+            <div class="metric-label">Worktree</div>
+            <div v-if="task.worktree?.exists" class="worktree-box">
+              <div class="mono">{{ task.worktree.path }}</div>
+              <div class="muted">
+                {{ task.worktree.branch || '-' }}
+                <span v-if="task.worktree.head"> @ {{ task.worktree.head }}</span>
+                <span v-if="task.worktree.dirty" class="danger-text"> · 有未提交改动</span>
+              </div>
+              <el-button size="small" plain :loading="cleaningWorktree" @click="cleanupWorktree">
+                清理 worktree
+              </el-button>
+            </div>
+            <div v-else class="muted">未占用</div>
+          </div>
+          <div class="side-item">
             <div class="metric-label">本项目职责</div>
             <div style="font-size: 13px">{{ task.scope_summary || '未填写' }}</div>
           </div>
@@ -329,13 +423,24 @@
             <div class="metric-label">需求快照 v{{ task.doc_version }}</div>
             <el-collapse>
               <el-collapse-item title="查看需求文档">
-                <pre class="mono" style="white-space: pre-wrap; max-height: 300px; overflow: auto">{{ task.doc_content }}</pre>
+                <MarkdownView :source="task.doc_content" max-height="300px" />
               </el-collapse-item>
             </el-collapse>
           </div>
         </div>
       </aside>
     </div>
+
+    <el-dialog
+      v-model="diffDialogVisible"
+      title="git diff"
+      width="92vw"
+      top="4vh"
+      class="diff-dialog"
+      destroy-on-close
+    >
+      <DiffView :diff="latestChange?.git_diff_snapshot || ''" max-height="calc(92vh - 150px)" />
+    </el-dialog>
   </section>
 </template>
 
@@ -344,6 +449,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusTag from '../components/StatusTag.vue'
 import CodeEditor from '../components/CodeEditor.vue'
+import MarkdownView from '../components/MarkdownView.vue'
+import DiffView from '../components/DiffView.vue'
 import { canTerminate, runningStatuses } from '../services/status'
 import { api } from '../services/api'
 
@@ -356,13 +463,21 @@ const planEditor = ref('')
 const commitEditor = ref('')
 const retroEditor = ref('')
 const fixFeedback = ref('')
+const rejectFeedback = ref('')
+const approving = ref(false)
+const planPreview = ref(false)
+const retroPreview = ref(false)
+const summaryRaw = ref(false)
+const diffDialogVisible = ref(false)
 const logLines = ref([])
 const logBox = ref(null)
 const openSteps = ref(new Set())
 const branching = ref(false)
 const planning = ref(false)
 const reviewing = ref(false)
+const aiReviewing = ref(false)
 const committing = ref(false)
+const cleaningWorktree = ref(false)
 
 let detailTimer = null
 let logTimer = null
@@ -378,6 +493,7 @@ const stepByStatus = {
   failed: 2,
   code_changed: 4,
   reviewing: 4,
+  review_passed: 4,
   review_failed: 4,
   ready_to_commit: 5,
   committing: 5,
@@ -417,6 +533,11 @@ const reviewGroups = computed(() => ({
 const runningRun = computed(() =>
   task.value?.runs?.find((run) => ['running', 'queued'].includes(run.status)),
 )
+const runHint = computed(() => {
+  if (runningRun.value?.status === 'queued') return '已入队,等待 Worker'
+  if (runningRun.value?.status === 'running') return '执行中,实时日志'
+  return 'Claude Code 修改代码'
+})
 const canTerminateTask = computed(() => task.value && canTerminate(task.value.status))
 
 function stepClass(step) {
@@ -470,10 +591,28 @@ function logText(log) {
 async function load({ silent = false } = {}) {
   task.value = await api.tasks.detail(props.id, { silent })
   branchEditor.value = task.value.final_branch_name || ''
-  if (latestPlan.value && !planEditor.value) planEditor.value = latestPlan.value.plan_content
+  if (latestPlan.value && !planEditor.value) {
+    planEditor.value = latestPlan.value.plan_content
+    // 计划已确认(锁定)时默认渲染预览,编辑期默认原文编辑
+    planPreview.value = planLocked.value
+  }
   if (task.value.commit_message && !commitEditor.value) commitEditor.value = task.value.commit_message
   if (task.value.retrospective && !retroEditor.value) retroEditor.value = task.value.retrospective.content
   syncTimers()
+  await ensureRunLogsLoaded()
+}
+
+async function ensureRunLogsLoaded() {
+  const run = runningRun.value || task.value?.runs?.[0]
+  if (!run || logLines.value.length) return
+  logRunId = run.id
+  try {
+    logLines.value = await api.runs.logs(run.id, 0, { silent: true })
+    await nextTick()
+    if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
+  } catch (error) {
+    /* 忽略 */
+  }
 }
 
 function syncTimers() {
@@ -583,10 +722,57 @@ async function review() {
   }
 }
 
+async function aiReview() {
+  aiReviewing.value = true
+  try {
+    await api.tasks.aiReview(props.id)
+    await load()
+    ElMessage.success('AI 只读 Review 已完成')
+  } finally {
+    aiReviewing.value = false
+  }
+}
+
+async function cleanupWorktree() {
+  await ElMessageBox.confirm('将移除该工单的独立 worktree,未提交改动会被丢弃。确认清理?', '清理 worktree', {
+    type: 'warning',
+  })
+  cleaningWorktree.value = true
+  try {
+    await api.tasks.cleanupWorktree(props.id)
+    await load()
+    ElMessage.success('worktree 已清理')
+  } finally {
+    cleaningWorktree.value = false
+  }
+}
+
 async function fix() {
   await api.tasks.fix(props.id, fixFeedback.value)
   fixFeedback.value = ''
   await load()
+}
+
+async function approveReview() {
+  await ElMessageBox.confirm('确认人工 Review 通过?通过后工单进入待提交状态。', '人工 Review', {
+    type: 'warning',
+  })
+  approving.value = true
+  try {
+    await api.tasks.approveReview(props.id)
+    await load()
+    ElMessage.success('人工 Review 已通过')
+  } finally {
+    approving.value = false
+  }
+}
+
+async function rejectReview() {
+  await api.tasks.rejectReview(props.id, rejectFeedback.value)
+  fixFeedback.value = rejectFeedback.value
+  rejectFeedback.value = ''
+  await load()
+  ElMessage.warning('已驳回,可在下方发起 fix 轮次让 AI 继续修改')
 }
 
 async function generateCommitMessage() {

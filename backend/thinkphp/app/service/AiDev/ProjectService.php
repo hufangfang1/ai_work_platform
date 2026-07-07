@@ -21,6 +21,7 @@ class ProjectService
     public function create(array $input)
     {
         $data = $this->filter($input);
+        (new CommandSafetyService())->assertProjectChecks($data);
         if (empty($data['name']) || empty($data['local_path'])) {
             throw new \RuntimeException('项目名称与本地目录不能为空');
         }
@@ -46,14 +47,14 @@ class ProjectService
         }
         $prompt = "阅读当前项目仓库(优先看 README、目录结构、主要源码与依赖清单),"
             . "用一句不超过 40 字的中文概括该项目的用途与技术栈。"
-            . "只输出这一句话,不要任何解释、标题或引号。";
-        $text = (new ClaudeCliService())->runText($prompt, [
+            . "只返回 JSON,结构:{\"description\":\"...\"},不要 JSON 以外的内容。";
+        $data = (new ClaudeCliService())->runJson($prompt, [
             'cwd' => $path,
             'timeout' => 180,
             'max_turns' => 8,
             'allowed_tools' => 'Read,Glob,Grep',
         ]);
-        $line = trim((string) strtok($text, "\n"));
+        $line = isset($data['description']) ? trim((string) $data['description']) : '';
         $line = trim($line, "\"'` 　");
         if ($line === '') {
             throw new \RuntimeException('AI 未能生成描述,请重试或手动填写');
@@ -65,6 +66,7 @@ class ProjectService
     {
         $data = $this->filter($input);
         if ($data) {
+            (new CommandSafetyService())->assertProjectChecks($data);
             $data['updated_at'] = date('Y-m-d H:i:s');
             Db::name('ai_dev_projects')->where('id', $id)->update($data);
         }

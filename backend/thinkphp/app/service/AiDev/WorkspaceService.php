@@ -39,6 +39,49 @@ class WorkspaceService
     }
 
     /**
+     * 浏览本地目录,供前端选择工作区根目录。
+     */
+    public function browse($path = '')
+    {
+        if ($path === '' || $path === null) {
+            $path = getenv('HOME') ?: '/';
+        } else {
+            $path = $this->expand(trim((string) $path));
+        }
+        $real = realpath($path);
+        if (!$real || !is_dir($real)) {
+            throw new \RuntimeException('目录不存在或不可访问: ' . $path);
+        }
+
+        $parent = dirname($real);
+        $dirs = [];
+        $entries = @scandir($real);
+        if ($entries) {
+            foreach ($entries as $entry) {
+                if ($entry === '.' || $entry === '..' || strpos($entry, '.') === 0) {
+                    continue;
+                }
+                $full = $real . DIRECTORY_SEPARATOR . $entry;
+                if (is_dir($full)) {
+                    $dirs[] = [
+                        'name' => $entry,
+                        'path' => $full,
+                    ];
+                }
+            }
+        }
+        usort($dirs, function ($a, $b) {
+            return strcasecmp($a['name'], $b['name']);
+        });
+
+        return [
+            'path' => $real,
+            'parent' => $parent !== $real ? $parent : null,
+            'dirs' => $dirs,
+        ];
+    }
+
+    /**
      * 扫描工作区根目录下(深度 <= 2)的 git 仓库。
      */
     public function scan()

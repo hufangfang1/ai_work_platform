@@ -36,6 +36,8 @@ class BreakdownService
 
         $config = (new ConfigService())->model();
         $modelName = $config ? $config['model_name'] : '';
+        // AI 调用可能耗时数分钟,先释放 MySQL 连接,避免 idle 后写回报 Packets out of order。
+        Db::connect()->close();
         $result = (new ClaudeCliService())->runJson($this->buildPrompt($doc['content'], $candidates, $manual), [
             'timeout' => 300,
             'max_turns' => 3,

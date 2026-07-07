@@ -19,6 +19,7 @@ Route::group('api/ai-dev', function () {
     Route::get('tasks/:id', 'AiDev.TaskController/read');
     Route::put('tasks/:id', 'AiDev.TaskController/update');
     Route::post('tasks/:id/terminate', 'AiDev.TaskController/terminate');
+    Route::post('tasks/:id/cleanup-worktree', 'AiDev.TaskController/cleanupWorktree');
 
     Route::post('tasks/:id/generate-branch', 'AiDev.TaskController/generateBranch');
     Route::post('tasks/:id/check-branch', 'AiDev.TaskController/checkBranch');
@@ -33,6 +34,9 @@ Route::group('api/ai-dev', function () {
     Route::post('runs/:runId/cancel', 'AiDev.RunController/cancel');
 
     Route::post('tasks/:id/review', 'AiDev.TaskController/review');
+    Route::post('tasks/:id/ai-review', 'AiDev.TaskController/aiReview');
+    Route::post('tasks/:id/approve-review', 'AiDev.TaskController/approveReview');
+    Route::post('tasks/:id/reject-review', 'AiDev.TaskController/rejectReview');
     Route::post('tasks/:id/fix', 'AiDev.TaskController/fix');
     Route::post('tasks/:id/generate-commit-message', 'AiDev.TaskController/generateCommitMessage');
     Route::post('tasks/:id/commit', 'AiDev.TaskController/commit');
@@ -49,9 +53,14 @@ Route::group('api/ai-dev', function () {
     Route::delete('projects/:id', 'AiDev.ProjectController/delete');
 
     Route::get('workspace-config', 'AiDev.ConfigController/workspace');
+    Route::get('workspace-browse', 'AiDev.ConfigController/browseWorkspace');
     Route::put('workspace-config', 'AiDev.ConfigController/saveWorkspace');
     Route::get('model-config', 'AiDev.ConfigController/model');
     Route::put('model-config', 'AiDev.ConfigController/saveModel');
     Route::get('security-rules', 'AiDev.ConfigController/securityRules');
     Route::put('security-rules', 'AiDev.ConfigController/saveSecurityRules');
+    Route::get('config-export', 'AiDev.ConfigController/exportConfig');
+    Route::post('config-import', 'AiDev.ConfigController/importConfig');
+    Route::get('migration-status', 'AiDev.ConfigController/migrationStatus');
+    Route::post('migrate', 'AiDev.ConfigController/migrate');
 });
