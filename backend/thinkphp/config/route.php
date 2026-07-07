@@ -5,7 +5,7 @@ return [
     'url_html_suffix' => 'html',
     'url_common_param' => true,
     'url_route_on' => true,
-    'route_complete_match' => false,
+    'route_complete_match' => true,
     'route_annotation' => false,
     'default_route_pattern' => '[\\w\\.]+',
     'request_cache_key' => true,
