@@ -22,8 +22,9 @@ class AgentExecutorService
 
         $allowedTools = $this->buildAllowedTools($project);
         $claudeCommand = function_exists('config') ? config('ai_dev.agent.command', 'claude') : 'claude';
+        // claude 在 --print 模式下用 stream-json 必须同时带 --verbose,否则直接报错退出。
         $cmd = sprintf(
-            '%s -p "$(cat %s)" --output-format stream-json --permission-mode acceptEdits --allowedTools %s --max-turns 50',
+            '%s -p "$(cat %s)" --output-format stream-json --verbose --permission-mode acceptEdits --allowedTools %s --max-turns 50',
             escapeshellcmd($claudeCommand),
             escapeshellarg($promptFile),
             escapeshellarg($allowedTools)
@@ -41,6 +42,8 @@ class AgentExecutorService
 
         $status = proc_get_status($process);
         $runService->markRunning($runId, (int) $status['pid']);
+        // prompt 已通过命令行参数传入,关闭 stdin 避免 claude 空等 stdin。
+        fclose($pipes[0]);
         stream_set_blocking($pipes[1], false);
         stream_set_blocking($pipes[2], false);
 

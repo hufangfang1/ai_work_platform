@@ -13,6 +13,8 @@ class ClaudeCliService
         $cwd = isset($options['cwd']) && $options['cwd'] !== '' ? $options['cwd'] : runtime_path();
         $timeout = isset($options['timeout']) ? (int) $options['timeout'] : 300;
         $maxTurns = isset($options['max_turns']) ? (int) $options['max_turns'] : 8;
+        // AI 调用远超 PHP 默认 max_execution_time(30s),否则脚本会在轮询循环中被杀。
+        @set_time_limit($timeout + 60);
         $cmd = escapeshellcmd(config('ai_dev.agent.command', 'claude'))
             . ' -p --output-format text --max-turns ' . $maxTurns;
         if (!empty($options['allowed_tools'])) {
