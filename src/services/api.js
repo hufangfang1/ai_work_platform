@@ -1,0 +1,97 @@
+import { ElMessage } from 'element-plus'
+
+const BASE = '/api/ai-dev'
+
+async function request(method, path, body, { silent = false } = {}) {
+  let res
+  try {
+    res = await fetch(BASE + path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch (error) {
+    if (!silent) ElMessage.error('无法连接后端服务')
+    throw error
+  }
+  const json = await res.json().catch(() => ({ code: res.status || -1, message: res.statusText }))
+  if (json.code !== 0) {
+    if (!silent) ElMessage.error(json.message || '请求失败')
+    const err = new Error(json.message || '请求失败')
+    err.code = json.code
+    throw err
+  }
+  return json.data
+}
+
+function qs(params = {}) {
+  const search = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') search.set(key, value)
+  })
+  const str = search.toString()
+  return str ? `?${str}` : ''
+}
+
+export const api = {
+  requirements: {
+    list: () => request('GET', '/requirements'),
+    create: (body) => request('POST', '/requirements', body),
+    detail: (id) => request('GET', `/requirements/${id}`),
+    update: (id, body) => request('PUT', `/requirements/${id}`, body),
+    close: (id) => request('POST', `/requirements/${id}/close`),
+    loadDoc: (id, body) => request('POST', `/requirements/${id}/load-doc`, body),
+    generateBreakdown: (id) => request('POST', `/requirements/${id}/generate-breakdown`),
+    saveBreakdown: (id, body) => request('PUT', `/requirements/${id}/breakdown`, body),
+    confirmBreakdown: (id) => request('POST', `/requirements/${id}/confirm-breakdown`),
+    tasks: (id) => request('GET', `/requirements/${id}/tasks`),
+  },
+
+  tasks: {
+    list: (params) => request('GET', `/tasks${qs(params)}`),
+    detail: (id, options) => request('GET', `/tasks/${id}`, undefined, options),
+    create: (body) => request('POST', '/tasks', body),
+    update: (id, body) => request('PUT', `/tasks/${id}`, body),
+    terminate: (id) => request('POST', `/tasks/${id}/terminate`),
+    generateBranch: (id) => request('POST', `/tasks/${id}/generate-branch`),
+    checkBranch: (id, finalBranchName) =>
+      request('POST', `/tasks/${id}/check-branch`, { final_branch_name: finalBranchName }),
+    generatePlan: (id) => request('POST', `/tasks/${id}/generate-plan`),
+    savePlan: (id, planContent) => request('PUT', `/tasks/${id}/plan`, { plan_content: planContent }),
+    confirmPlan: (id) => request('POST', `/tasks/${id}/confirm-plan`),
+    execute: (id) => request('POST', `/tasks/${id}/execute`),
+    review: (id) => request('POST', `/tasks/${id}/review`),
+    fix: (id, feedback) => request('POST', `/tasks/${id}/fix`, { feedback }),
+    generateCommitMessage: (id) => request('POST', `/tasks/${id}/generate-commit-message`),
+    commit: (id, commitMessage) => request('POST', `/tasks/${id}/commit`, { commit_message: commitMessage }),
+    push: (id) => request('POST', `/tasks/${id}/push`),
+    retrospect: (id) => request('POST', `/tasks/${id}/retrospect`),
+    getRetrospective: (id) => request('GET', `/tasks/${id}/retrospective`),
+    saveRetrospective: (id, content) => request('PUT', `/tasks/${id}/retrospective`, { content }),
+    runs: (id) => request('GET', `/tasks/${id}/runs`),
+  },
+
+  runs: {
+    detail: (runId, options) => request('GET', `/runs/${runId}`, undefined, options),
+    logs: (runId, afterSeq = 0, options) =>
+      request('GET', `/runs/${runId}/logs${qs({ after_seq: afterSeq })}`, undefined, options),
+    cancel: (runId) => request('POST', `/runs/${runId}/cancel`),
+  },
+
+  projects: {
+    list: () => request('GET', '/projects'),
+    save: (body) => request('POST', '/projects', body),
+    update: (id, body) => request('PUT', `/projects/${id}`, body),
+    remove: (id) => request('DELETE', `/projects/${id}`),
+    scan: () => request('POST', '/projects/scan'),
+  },
+
+  config: {
+    workspace: () => request('GET', '/workspace-config'),
+    saveWorkspace: (roots) => request('PUT', '/workspace-config', { roots }),
+    model: () => request('GET', '/model-config'),
+    saveModel: (body) => request('PUT', '/model-config', body),
+    securityRules: () => request('GET', '/security-rules'),
+    saveSecurityRules: (rules) => request('PUT', '/security-rules', { rules }),
+  },
+}

@@ -1,0 +1,37 @@
+{
+  "name": "ai-dev/workbench-api",
+  "description": "AI development workbench API based on ThinkPHP",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": ">=7.2",
+    "topthink/framework": "6.0.16",
+    "topthink/think-helper": "3.1.8",
+    "topthink/think-orm": "^2.0",
+    "topthink/think-queue": "^3.0"
+  },
+  "require-dev": {},
+  "autoload": {
+    "psr-4": {
+      "app\\": "app"
+    },
+    "psr-0": {
+      "": "extend/"
+    }
+  },
+  "scripts": {
+    "post-autoload-dump": [
+      "@php think service:discover",
+      "@php think vendor:publish"
+    ]
+  },
+  "config": {
+    "preferred-install": "dist",
+    "sort-packages": true,
+    "allow-plugins": {
+      "topthink/think-installer": true
+    }
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

@@ -1,0 +1,45 @@
+<?php
+
+namespace app\job;
+
+use app\service\AiDev\AgentExecutorService;
+use app\service\AiDev\RunService;
+use app\service\AiDev\TaskService;
+use think\queue\Job;
+
+class AiDevCodeJob
+{
+    public function fire(Job $job, $data)
+    {
+        $runId = isset($data['run_id']) ? (int) $data['run_id'] : 0;
+        $runService = new RunService();
+
+        try {
+            $runService->appendLog($runId, 'queue', 'Worker 领取 AI 编码任务');
+            (new AgentExecutorService())->execute($runId);
+            $job->delete();
+        } catch (\Throwable $e) {
+            $run = $runService->detail($runId);
+            $runService->appendLog($runId, 'error', $e->getMessage());
+            $runService->finish($runId, 'failed', '', $e->getMessage());
+            if ($run) {
+                (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
+            }
+            $job->delete();
+        }
+    }
+
+    public function failed($data)
+    {
+        $runId = isset($data['run_id']) ? (int) $data['run_id'] : 0;
+        if ($runId <= 0) {
+            return;
+        }
+        $runService = new RunService();
+        $run = $runService->detail($runId);
+        $runService->finish($runId, 'failed', '', '队列任务执行失败');
+        if ($run) {
+            (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
+        }
+    }
+}
