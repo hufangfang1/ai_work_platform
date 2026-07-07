@@ -149,7 +149,13 @@
             <el-input v-model="editForm.name" />
           </el-form-item>
           <el-form-item label="项目描述">
-            <el-input v-model="editForm.description" />
+            <div class="toolbar" style="width: 100%">
+              <el-input v-model="editForm.description" style="flex: 1" placeholder="可点右侧「AI 生成」自动填写" />
+              <el-button :loading="editDescribing" @click="describeEdit">
+                <el-icon><MagicStick /></el-icon>
+                AI 生成
+              </el-button>
+            </div>
           </el-form-item>
           <el-form-item label="仓库地址(自动读取)">
             <el-input :model-value="editForm.repo_url" class="mono" disabled />
@@ -199,6 +205,7 @@ const selectedRepos = ref([])
 const editVisible = ref(false)
 const editForm = ref(null)
 const describingAll = ref(false)
+const editDescribing = ref(false)
 
 async function load() {
   loading.value = true
@@ -303,6 +310,21 @@ async function addSelected() {
 function edit(project) {
   editForm.value = { ...project }
   editVisible.value = true
+}
+
+async function describeEdit() {
+  if (!editForm.value?.local_path) {
+    ElMessage.warning('该项目缺少本地目录,无法读取仓库')
+    return
+  }
+  editDescribing.value = true
+  try {
+    const { description } = await api.projects.describe(editForm.value.local_path)
+    editForm.value.description = description
+    ElMessage.success('已生成描述')
+  } finally {
+    editDescribing.value = false
+  }
 }
 
 async function saveEdit() {
