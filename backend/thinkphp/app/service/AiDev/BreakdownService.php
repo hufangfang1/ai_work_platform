@@ -6,7 +6,7 @@ use think\facade\Db;
 
 class BreakdownService
 {
-    public function generate($requirementId)
+    public function generate($requirementId, array $projectIds = [])
     {
         $requirement = Db::name('ai_dev_requirements')->where('id', $requirementId)->find();
         if (!$requirement) {
@@ -21,9 +21,22 @@ class BreakdownService
             throw new \RuntimeException('请先在项目页添加至少一个项目');
         }
 
+        // 人工指定涉及项目时,只在所选范围内拆解;留空则由 AI 从全部候选中判断。
+        $manual = !empty($projectIds);
+        $candidates = $projects;
+        if ($manual) {
+            $wanted = array_map('intval', $projectIds);
+            $candidates = array_values(array_filter($projects, function ($p) use ($wanted) {
+                return in_array((int) $p['id'], $wanted, true);
+            }));
+            if (!$candidates) {
+                throw new \RuntimeException('所选项目无效,请重新选择');
+            }
+        }
+
         $config = (new ConfigService())->model();
         $modelName = $config ? $config['model_name'] : '';
-        $result = (new ClaudeCliService())->runJson($this->buildPrompt($doc['content'], $projects), [
+        $result = (new ClaudeCliService())->runJson($this->buildPrompt($doc['content'], $candidates, $manual), [
             'timeout' => 300,
             'max_turns' => 3,
         ]);
@@ -138,7 +151,7 @@ class BreakdownService
         return Db::name('ai_dev_breakdowns')->where('id', $id)->find();
     }
 
-    private function buildPrompt($docContent, array $projects)
+    private function buildPrompt($docContent, array $projects, $manual = false)
     {
         $lines = [];
         foreach ($projects as $project) {
@@ -146,11 +159,21 @@ class BreakdownService
                 . ' | description: ' . ($project['description'] !== '' ? $project['description'] : '无')
                 . ' | repo: ' . $project['repo_url'];
         }
-        return "你是研发负责人。阅读需求文档,从下方候选项目中判断本需求涉及哪些项目,并给出拆解。\n"
-            . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"scope_summary\":\"...\",\"interfaces\":\"...\"}]}\n"
-            . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口约定 / ## 风险点。\n"
-            . "projects 只列确实需要改动的项目;project_name 必须从候选列表原样取;scope_summary 说明该项目要做什么;interfaces 说明与其他项目的接口约定,没有则留空。\n\n"
-            . "# 候选项目\n" . implode("\n", $lines) . "\n\n"
+        if ($manual) {
+            $task = "你是研发负责人。阅读需求文档,下方项目已由人工确认为本需求涉及的项目。\n"
+                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"scope_summary\":\"...\",\"interfaces\":\"...\"}]}\n"
+                . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口约定 / ## 风险点。\n"
+                . "projects 必须为下方**每一个**项目各输出一条,不得新增或遗漏;project_name 必须从列表原样取;"
+                . "scope_summary 说明该项目在本需求中要做什么;interfaces 说明与其他项目的接口约定,没有则留空。\n\n"
+                . "# 本需求涉及的项目(人工确认)\n";
+        } else {
+            $task = "你是研发负责人。阅读需求文档,从下方候选项目中判断本需求涉及哪些项目,并给出拆解。\n"
+                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"scope_summary\":\"...\",\"interfaces\":\"...\"}]}\n"
+                . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口约定 / ## 风险点。\n"
+                . "projects 只列确实需要改动的项目;project_name 必须从候选列表原样取;scope_summary 说明该项目要做什么;interfaces 说明与其他项目的接口约定,没有则留空。\n\n"
+                . "# 候选项目\n";
+        }
+        return $task . implode("\n", $lines) . "\n\n"
             . "# 需求文档(已脱敏)\n" . $docContent . "\n";
     }
 }

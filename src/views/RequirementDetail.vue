@@ -83,6 +83,22 @@
           </div>
         </div>
         <div class="toolbar">
+          <el-select
+            v-model="selectedProjectIds"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="涉及项目(留空=AI 自动判断)"
+            style="width: 260px"
+            :disabled="breakingDown || requirement.status === 'closed'"
+          >
+            <el-option
+              v-for="p in allProjects"
+              :key="p.id"
+              :label="p.name"
+              :value="p.id"
+            />
+          </el-select>
           <el-button
             :loading="breakingDown"
             :disabled="!latestDoc || requirement.status === 'closed'"
@@ -199,6 +215,8 @@ import { api } from '../services/api'
 const props = defineProps({ id: { type: String, required: true } })
 
 const requirement = ref(null)
+const allProjects = ref([])
+const selectedProjectIds = ref([])
 const breakdownEditor = ref('')
 const viewDocId = ref(null)
 const docDialogVisible = ref(false)
@@ -234,9 +252,17 @@ function formatTime(value) {
 }
 
 async function load() {
-  requirement.value = await api.requirements.detail(props.id)
+  const [detail, projects] = await Promise.all([
+    api.requirements.detail(props.id),
+    api.projects.list(),
+  ])
+  requirement.value = detail
+  allProjects.value = projects
   docForm.doc_url = requirement.value.doc_url
   if (latestDoc.value) viewDocId.value = latestDoc.value.id
+  // 已有拆解时,回填其涉及项目,方便「重新拆解」时沿用人工范围
+  const ids = breakdownProjects.value.map((item) => item.project_id).filter(Boolean)
+  if (ids.length) selectedProjectIds.value = ids
 }
 
 async function saveDoc() {
@@ -259,8 +285,12 @@ async function saveDoc() {
 async function generateBreakdown() {
   breakingDown.value = true
   try {
-    await api.requirements.generateBreakdown(props.id)
-    ElMessage.success('拆解完成,请核对项目分工')
+    await api.requirements.generateBreakdown(props.id, { project_ids: selectedProjectIds.value })
+    ElMessage.success(
+      selectedProjectIds.value.length
+        ? '已按所选项目拆解,请核对职责分工'
+        : '拆解完成,请核对项目分工',
+    )
     await load()
   } finally {
     breakingDown.value = false
