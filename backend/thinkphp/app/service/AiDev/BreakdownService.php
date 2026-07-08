@@ -71,6 +71,7 @@ class BreakdownService
             $normalized[] = [
                 'project_id' => isset($nameMap[$projectName]) ? $nameMap[$projectName] : 0,
                 'project_name' => $projectName,
+                'role' => isset($item['role']) ? trim($item['role']) : '其他',
                 'scope_summary' => isset($item['scope_summary']) ? $item['scope_summary'] : '',
                 'interfaces' => isset($item['interfaces']) ? $item['interfaces'] : '',
                 'unmatched' => !isset($nameMap[$projectName]),
@@ -186,15 +187,21 @@ class BreakdownService
         }
         if ($manual) {
             $task = "你是研发负责人。阅读需求文档,下方项目已由人工确认为本需求涉及的项目。\n"
-                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"scope_summary\":\"...\",\"interfaces\":\"...\"}]}\n"
-                . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口约定 / ## 风险点。\n"
+                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"role\":\"前端|后端|其他\",\"scope_summary\":\"...\",\"interfaces\":\"...\"}]}\n"
+                . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口契约 / ## 风险点。\n"
+                . "其中 ## 跨项目接口契约 必须独立且完整:写清接口路径、入参出参、字段口径、用户标识来源、谁读谁写;它是后续各项目子文档共享的唯一事实源。\n"
+                . "判定分工时,必须依据每个项目下方的 description(项目简介)界定该项目在本需求中的职责边界,只把属于它的部分划给它,不要展开任何一个项目的代码级实现细节。\n"
+                . "role 依据项目简介判定:以页面/H5/PC 展示为主填『前端』,以接口/代理/数据/日志为主填『后端』,无法归类填『其他』。\n"
                 . "projects 必须为下方**每一个**项目各输出一条,不得新增或遗漏;project_name 必须从列表原样取;"
                 . "scope_summary 说明该项目在本需求中要做什么;interfaces 说明与其他项目的接口约定,没有则留空。\n\n"
                 . "# 本需求涉及的项目(人工确认)\n";
         } else {
             $task = "你是研发负责人。阅读需求文档,从下方候选项目中判断本需求涉及哪些项目,并给出拆解。\n"
-                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"scope_summary\":\"...\",\"interfaces\":\"...\"}]}\n"
-                . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口约定 / ## 风险点。\n"
+                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"role\":\"前端|后端|其他\",\"scope_summary\":\"...\",\"interfaces\":\"...\"}]}\n"
+                . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口契约 / ## 风险点。\n"
+                . "其中 ## 跨项目接口契约 必须独立且完整:写清接口路径、入参出参、字段口径、用户标识来源、谁读谁写;它是后续各项目子文档共享的唯一事实源。\n"
+                . "判定分工时,必须依据每个项目下方的 description(项目简介)界定该项目在本需求中的职责边界,只把属于它的部分划给它,不要展开任何一个项目的代码级实现细节。\n"
+                . "role 依据项目简介判定:以页面/H5/PC 展示为主填『前端』,以接口/代理/数据/日志为主填『后端』,无法归类填『其他』。\n"
                 . "projects 只列确实需要改动的项目;project_name 必须从候选列表原样取;scope_summary 说明该项目要做什么;interfaces 说明与其他项目的接口约定,没有则留空。\n\n"
                 . "# 候选项目\n";
         }
