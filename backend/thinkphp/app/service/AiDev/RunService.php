@@ -7,7 +7,7 @@ use think\facade\Queue;
 
 class RunService
 {
-    const GENERATION_RUN_TYPES = ['requirement_breakdown', 'task_plan', 'project_description', 'ai_review', 'commit_message'];
+    const GENERATION_RUN_TYPES = ['requirement_breakdown', 'task_plan', 'project_description', 'ai_review', 'commit_message', 'branch_name'];
 
     public function enqueueCoding($taskId, $model = '')
     {
@@ -148,7 +148,7 @@ class RunService
         return $this->detail($runId);
     }
 
-    public function retry($runId)
+    public function retry($runId, $modelOverride = null)
     {
         $run = $this->detail($runId);
         if (!$run) {
@@ -156,6 +156,11 @@ class RunService
         }
         if (in_array($run['status'], ['queued', 'running'], true)) {
             throw new \RuntimeException('运行中的任务不能重试');
+        }
+        // 显式传了模型就换模型重试(解析非法 key 会抛错),否则沿用原 run 的模型。
+        $modelName = $run['model_name'];
+        if ($modelOverride !== null) {
+            $modelName = (new ModelProfileService())->resolveKey($run['run_type'], (string) $modelOverride);
         }
         if ($run['run_type'] === 'commit_message' && $this->recoverCommitMessageRun($run)) {
             return $this->detail($runId);
@@ -165,7 +170,7 @@ class RunService
             $run['run_type'],
             $run['input'],
             $run['agent_session_id'],
-            $run['model_name']
+            $modelName
         );
         if (in_array($run['run_type'], ['coding', 'fix'], true)) {
             Queue::push('app\job\AiDevCodeJob', ['run_id' => $newRun['id']], 'ai_dev_code');
@@ -241,9 +246,8 @@ class RunService
 
     private function buildPrompt(array $task, array $plan, $feedback)
     {
-        $doc = Db::name('ai_dev_requirement_docs')->where('id', $task['doc_version_id'])->find();
         $prompt = "# 任务\n按以下已确认的开发计划修改代码，不要偏离计划范围。\n\n";
-        $prompt .= "# 需求文档（已脱敏快照）\n" . ($doc ? $doc['content'] : '') . "\n\n";
+        $prompt .= (new TaskService())->projectContext($task) . "\n\n";
         if (!empty($task['scope_summary'])) {
             $prompt .= "# 本项目职责（来自需求拆解）\n" . $task['scope_summary'] . "\n\n";
         }

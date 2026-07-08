@@ -25,7 +25,7 @@ class PlanService
         return (new RunService())->enqueueGeneration((int) $taskId, 'task_plan', [
             'operation' => 'task_plan',
             'task_id' => (int) $taskId,
-            'prompt' => $this->buildPrompt($doc['content'], $task['scope_summary']),
+            'prompt' => $this->buildPrompt((new TaskService())->projectContext($task), $task['scope_summary']),
             'options' => [
                 'cwd' => $project['local_path'],
                 'allowed_tools' => 'Read,Glob,Grep',
@@ -97,13 +97,13 @@ class PlanService
         return Db::name('ai_dev_plans')->where('id', $plan['id'])->find();
     }
 
-    private function buildPrompt($docContent, $scopeSummary)
+    private function buildPrompt($projectContext, $scopeSummary)
     {
         return "你在该项目代码库根目录,可用 Read/Glob/Grep 阅读代码(禁止修改任何文件)。"
             . "为以下需求产出本项目的开发计划。只返回 JSON,结构:{\"plan_markdown\":\"...\"},不要 JSON 以外的内容。\n"
             . "计划必须引用真实存在的文件路径;结构固定为:\n"
             . "## 需求理解 / ## 涉及模块与文件 / ## 实施步骤 / ## 配置变更 / ## SQL 变更 / ## 验证计划 / ## 风险点\n\n"
-            . "# 需求文档(已脱敏)\n" . $docContent . "\n\n"
+            . $projectContext . "\n\n"
             . "# 本项目职责(来自需求拆解)\n" . ($scopeSummary !== '' ? $scopeSummary : '整个需求都在本项目内实现') . "\n";
     }
 }
