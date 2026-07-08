@@ -154,6 +154,19 @@ class BreakdownService
             Db::rollback();
             throw $e;
         }
+        // 多项目才拆分:为每张新建(非跳过)工单排一个子文档生成 run;单项目沿用原文,不生成。
+        if (count($created) > 1) {
+            foreach ($created as $c) {
+                if (!empty($c['skipped'])) {
+                    continue;
+                }
+                try {
+                    (new SpecService())->generate((int) $c['task_id']);
+                } catch (\Throwable $e) {
+                    // 单个失败不阻断确认;可在工单页手动重新生成
+                }
+            }
+        }
         return $created;
     }
 
