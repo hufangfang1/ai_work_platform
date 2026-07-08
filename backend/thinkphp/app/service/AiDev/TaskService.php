@@ -32,6 +32,26 @@ class TaskService
     }
 
     /**
+     * 生成计划/编码/Review 时喂给 AI 的"本项目上下文"。
+     * 多项目:本项目子文档 + 已确认拆解(含共享接口契约);单项目:原始需求文档全文。
+     */
+    public function projectContext(array $task)
+    {
+        $spec = isset($task['spec_markdown']) ? trim((string) $task['spec_markdown']) : '';
+        if ($spec !== '') {
+            $breakdown = Db::name('ai_dev_breakdowns')
+                ->where('requirement_id', (int) $task['requirement_id'])
+                ->whereNotNull('confirmed_at')
+                ->order('version', 'desc')->find();
+            $contract = $breakdown ? (string) $breakdown['content'] : '';
+            return "# 本项目需求文档(按本项目职责拆解)\n" . $spec . "\n\n"
+                . "# 需求拆解与共享接口契约\n" . $contract . "\n";
+        }
+        $doc = Db::name('ai_dev_requirement_docs')->where('id', (int) $task['doc_version_id'])->find();
+        return "# 需求文档(已脱敏)\n" . ($doc ? (string) $doc['content'] : '') . "\n";
+    }
+
+    /**
      * 手动建单(需求详情页内追加工单),必须挂在需求下。
      */
     public function create(array $input)

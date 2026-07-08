@@ -8,6 +8,7 @@ use app\service\AiDev\PlanService;
 use app\service\AiDev\RetrospectiveService;
 use app\service\AiDev\ReviewService;
 use app\service\AiDev\RunService;
+use app\service\AiDev\SpecService;
 use app\service\AiDev\TaskService;
 
 class TaskController extends BaseController
@@ -45,7 +46,7 @@ class TaskController extends BaseController
 
     public function generateBranch($id, BranchService $service)
     {
-        return $this->ok($service->generateForTask((int) $id));
+        return $this->ok($service->enqueue((int) $id, $this->request->post('model/s', '')), 'queued');
     }
 
     public function checkBranch($id, BranchService $service)
@@ -54,6 +55,11 @@ class TaskController extends BaseController
     }
 
     public function generatePlan($id, PlanService $service)
+    {
+        return $this->ok($service->generate((int) $id, $this->request->post('model/s', '')));
+    }
+
+    public function generateSpec($id, SpecService $service)
     {
         return $this->ok($service->generate((int) $id, $this->request->post('model/s', '')));
     }

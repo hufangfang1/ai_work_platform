@@ -54,10 +54,11 @@ export const api = {
     update: (id, body) => request('PUT', `/tasks/${id}`, body),
     terminate: (id) => request('POST', `/tasks/${id}/terminate`),
     cleanupWorktree: (id) => request('POST', `/tasks/${id}/cleanup-worktree`),
-    generateBranch: (id) => request('POST', `/tasks/${id}/generate-branch`),
+    generateBranch: (id, model = '') => request('POST', `/tasks/${id}/generate-branch`, { model }),
     checkBranch: (id, finalBranchName) =>
       request('POST', `/tasks/${id}/check-branch`, { final_branch_name: finalBranchName }),
     generatePlan: (id, model = '') => request('POST', `/tasks/${id}/generate-plan`, { model }),
+    generateSpec: (id, model = '') => request('POST', `/tasks/${id}/generate-spec`, { model }),
     savePlan: (id, planContent) => request('PUT', `/tasks/${id}/plan`, { plan_content: planContent }),
     confirmPlan: (id) => request('POST', `/tasks/${id}/confirm-plan`),
     execute: (id, model = '') => request('POST', `/tasks/${id}/execute`, { model }),
@@ -80,7 +81,8 @@ export const api = {
     logs: (runId, afterSeq = 0, options) =>
       request('GET', `/runs/${runId}/logs${qs({ after_seq: afterSeq })}`, undefined, options),
     cancel: (runId) => request('POST', `/runs/${runId}/cancel`),
-    retry: (runId) => request('POST', `/runs/${runId}/retry`),
+    retry: (runId, model) =>
+      request('POST', `/runs/${runId}/retry`, model !== undefined ? { model } : undefined),
   },
 
   projects: {
@@ -97,8 +99,11 @@ export const api = {
     browseWorkspace: (path) => request('GET', `/workspace-browse${qs({ path })}`),
     saveWorkspace: (roots) => request('PUT', '/workspace-config', { roots }),
     model: () => request('GET', '/model-config'),
+    modelProfiles: () => request('GET', '/model-profiles'),
     modelOptions: () => request('GET', '/model-options'),
     saveModel: (body) => request('PUT', '/model-config', body),
+    saveModelProfiles: (profiles) => request('PUT', '/model-profiles', { profiles }),
+    refreshModelProfiles: () => request('POST', '/model-profiles/refresh'),
     securityRules: () => request('GET', '/security-rules'),
     saveSecurityRules: (rules) => request('PUT', '/security-rules', { rules }),
     exportConfig: () => request('GET', '/config-export'),
