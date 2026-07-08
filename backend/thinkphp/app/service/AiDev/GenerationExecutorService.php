@@ -4,7 +4,8 @@ namespace app\service\AiDev;
 
 class GenerationExecutorService
 {
-    private $lastResultEvent = null;
+    private $lastResultText = null;
+    private $modelKey = '';
 
     public function execute($runId)
     {
@@ -39,18 +40,16 @@ class GenerationExecutorService
 
         $modelProfile = new ModelProfileService();
         $modelKey = isset($options['model_profile']) ? (string) $options['model_profile'] : '';
+        $this->modelKey = $modelKey;
 
         $promptFile = sys_get_temp_dir() . '/ai-dev-generation-prompt-' . $runId . '.md';
         file_put_contents($promptFile, $prompt);
-        $cmd = sprintf(
-            '%s -p "$(cat %s)" --output-format stream-json --verbose --max-turns %d',
-            escapeshellcmd(config('ai_dev.agent.command', 'claude')),
-            escapeshellarg($promptFile),
-            $maxTurns
-        ) . $modelProfile->commandArg($modelKey);
-        if (!empty($options['allowed_tools'])) {
-            $cmd .= ' --allowedTools ' . escapeshellarg($options['allowed_tools']);
-        }
+        // 生成类任务只读仓库产出 JSON,不改代码。
+        $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
+            'max_turns' => $maxTurns,
+            'allowed_tools' => isset($options['allowed_tools']) ? (string) $options['allowed_tools'] : '',
+            'edit' => false,
+        ]);
 
         $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $process = proc_open($cmd, $descriptors, $pipes, $cwd, $modelProfile->processEnv($modelKey));
@@ -118,8 +117,8 @@ class GenerationExecutorService
             $runService->appendLog($runId, 'error', $message);
             throw new \RuntimeException($message);
         }
-        if (is_array($this->lastResultEvent) && isset($this->lastResultEvent['result'])) {
-            return trim((string) $this->lastResultEvent['result']);
+        if ($this->lastResultText !== null) {
+            return trim((string) $this->lastResultText);
         }
         return trim($output);
     }
@@ -132,6 +131,9 @@ class GenerationExecutorService
         if ($run['run_type'] === 'task_plan') {
             return (new PlanService())->finishRun($run, $data);
         }
+        if ($run['run_type'] === 'task_spec') {
+            return (new SpecService())->finishRun($run, $data);
+        }
         if ($run['run_type'] === 'project_description') {
             return (new ProjectService())->finishDescribeRun($run, $data);
         }
@@ -140,6 +142,9 @@ class GenerationExecutorService
         }
         if ($run['run_type'] === 'commit_message') {
             return (new CommitService())->finishMessageRun($run, $data);
+        }
+        if ($run['run_type'] === 'branch_name') {
+            return (new BranchService())->finishRun($run, $data);
         }
         throw new \RuntimeException('未知 AI 生成任务类型: ' . $run['run_type']);
     }
@@ -167,8 +172,9 @@ class GenerationExecutorService
         $event = json_decode($line, true);
         if (is_array($event)) {
             $type = isset($event['type']) ? $event['type'] : 'json';
-            if ($type === 'result') {
-                $this->lastResultEvent = $event;
+            $resultText = (new ModelProfileService())->streamResultText($this->modelKey, $event);
+            if ($resultText !== null) {
+                $this->lastResultText = $resultText;
             }
             if ($type === 'system' && isset($event['subtype']) && $event['subtype'] === 'thinking_tokens') {
                 return;
@@ -200,17 +206,14 @@ class GenerationExecutorService
         if (trim($error) !== '') {
             $parts[] = trim($error);
         }
-        if (is_array($this->lastResultEvent)) {
-            $detail = isset($this->lastResultEvent['result']) ? trim((string) $this->lastResultEvent['result']) : '';
-            $subtype = isset($this->lastResultEvent['subtype']) ? $this->lastResultEvent['subtype'] : '';
-            if ($detail !== '' || $subtype !== '') {
-                $parts[] = 'result[' . $subtype . ']: ' . mb_substr($detail, 0, 2000);
-            }
+        if ($this->lastResultText !== null && trim((string) $this->lastResultText) !== '') {
+            $parts[] = 'result: ' . mb_substr(trim((string) $this->lastResultText), 0, 2000);
         }
+        $label = (new ModelProfileService())->agentLabel($this->modelKey);
         if ($termSignal > 0) {
-            $parts[] = 'Claude Code 被信号 ' . $termSignal . ' 终止';
+            $parts[] = $label . ' 被信号 ' . $termSignal . ' 终止';
         } else {
-            $parts[] = 'Claude Code 退出码 ' . $exitCode;
+            $parts[] = $label . ' 退出码 ' . $exitCode;
         }
         return implode("\n", $parts);
     }
