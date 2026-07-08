@@ -36,8 +36,13 @@
           </div>
           <div v-if="isOpen(1)" class="flow-step__body">
             <div class="toolbar">
-              <el-button :loading="branching" :disabled="task.status !== 'created'" @click="generateBranch">
-                生成分支名
+              <ModelPicker v-model="branchModel" step="branch_name" />
+              <el-button
+                :loading="branching || branchRunning"
+                :disabled="task.status !== 'created' || branchRunning"
+                @click="generateBranch"
+              >
+                AI 生成分支名
               </el-button>
               <el-input
                 v-model="branchEditor"
@@ -50,6 +55,15 @@
               <span v-if="branchCheck" :class="branchCheck.valid ? 'success-text' : 'danger-text'">
                 {{ branchCheck.message }}
               </span>
+            </div>
+            <AiRunPanel
+              v-if="latestBranchRun"
+              :run="latestBranchRun"
+              :retry-model="branchModel"
+              @refresh="load"
+            />
+            <div v-if="branchRunning" class="empty-state">
+              AI 分支名生成任务已入队，可查看上方日志；完成后会自动回填。
             </div>
             <el-divider style="margin: 4px 0" />
             <div class="toolbar">
@@ -407,6 +421,28 @@
             <div class="metric-label">本项目职责</div>
             <div style="font-size: 13px">{{ task.scope_summary || '未填写' }}</div>
           </div>
+          <div v-if="task.spec_markdown || specRunning" class="side-item">
+            <div class="metric-label">
+              本项目需求文档
+              <el-button
+                text
+                type="primary"
+                size="small"
+                :loading="generatingSpec || specRunning"
+                @click="generateSpec"
+              >
+                {{ task.spec_markdown ? '重新生成' : '生成' }}
+              </el-button>
+            </div>
+            <div v-if="specRunning" class="muted" style="font-size: 12px">
+              生成任务已入队,完成后自动刷新。
+            </div>
+            <el-collapse v-else-if="task.spec_markdown">
+              <el-collapse-item title="查看本项目需求文档">
+                <MarkdownView :source="task.spec_markdown" max-height="360px" />
+              </el-collapse-item>
+            </el-collapse>
+          </div>
           <div class="side-item">
             <div class="metric-label">需求快照 v{{ task.doc_version }}</div>
             <el-collapse>
@@ -461,6 +497,7 @@ const retroPreview = ref(false)
 const diffDialogVisible = ref(false)
 // 各 AI 步骤本次执行指定的模型 key,空 = 走配置默认
 const planModel = ref('')
+const branchModel = ref('')
 const codeModel = ref('')
 const fixModel = ref('')
 const reviewModel = ref('')
@@ -468,6 +505,7 @@ const commitModel = ref('')
 const openSteps = ref(new Set())
 const branching = ref(false)
 const planning = ref(false)
+const generatingSpec = ref(false)
 const reviewing = ref(false)
 const aiReviewing = ref(false)
 const committing = ref(false)
@@ -528,6 +566,13 @@ const runningRun = computed(() =>
 const latestCodeRun = computed(() =>
   runningRun.value || task.value?.runs?.find((run) => ['coding', 'fix'].includes(run.run_type)) || null,
 )
+const runningBranchRun = computed(() =>
+  task.value?.runs?.find((run) => run.run_type === 'branch_name' && ['running', 'queued'].includes(run.status)),
+)
+const latestBranchRun = computed(() =>
+  runningBranchRun.value || task.value?.runs?.find((run) => run.run_type === 'branch_name') || null,
+)
+const branchRunning = computed(() => !!runningBranchRun.value)
 const runningPlanRun = computed(() =>
   task.value?.runs?.find((run) => run.run_type === 'task_plan' && ['running', 'queued'].includes(run.status)),
 )
@@ -535,6 +580,9 @@ const latestPlanRun = computed(() =>
   runningPlanRun.value || task.value?.runs?.find((run) => run.run_type === 'task_plan') || null,
 )
 const planRunning = computed(() => !!runningPlanRun.value)
+const specRunning = computed(() =>
+  !!task.value?.runs?.find((run) => run.run_type === 'task_spec' && ['running', 'queued'].includes(run.status)),
+)
 const runningAiReviewRun = computed(() =>
   task.value?.runs?.find((run) => run.run_type === 'ai_review' && ['running', 'queued'].includes(run.status)),
 )
@@ -613,9 +661,9 @@ function syncTimers() {
 async function generateBranch() {
   branching.value = true
   try {
-    await api.tasks.generateBranch(props.id)
+    await api.tasks.generateBranch(props.id, branchModel.value)
     await load()
-    ElMessage.success('分支名已生成,可直接修改')
+    ElMessage.success('分支名生成任务已入队,完成后自动回填')
   } finally {
     branching.value = false
   }
@@ -639,6 +687,17 @@ async function generatePlan() {
     ElMessage.success('计划生成任务已入队')
   } finally {
     planning.value = false
+  }
+}
+
+async function generateSpec() {
+  generatingSpec.value = true
+  try {
+    await api.tasks.generateSpec(props.id, '')
+    await load()
+    ElMessage.success('本项目需求文档生成任务已入队')
+  } finally {
+    generatingSpec.value = false
   }
 }
 

@@ -24,6 +24,7 @@ Route::group('api/ai-dev', function () {
     Route::post('tasks/:id/generate-branch', 'AiDev.TaskController/generateBranch');
     Route::post('tasks/:id/check-branch', 'AiDev.TaskController/checkBranch');
     Route::post('tasks/:id/generate-plan', 'AiDev.TaskController/generatePlan');
+    Route::post('tasks/:id/generate-spec', 'AiDev.TaskController/generateSpec');
     Route::put('tasks/:id/plan', 'AiDev.TaskController/savePlan');
     Route::post('tasks/:id/confirm-plan', 'AiDev.TaskController/confirmPlan');
 
@@ -57,8 +58,11 @@ Route::group('api/ai-dev', function () {
     Route::get('workspace-browse', 'AiDev.ConfigController/browseWorkspace');
     Route::put('workspace-config', 'AiDev.ConfigController/saveWorkspace');
     Route::get('model-config', 'AiDev.ConfigController/model');
+    Route::get('model-profiles', 'AiDev.ConfigController/modelProfiles');
     Route::get('model-options', 'AiDev.ConfigController/modelOptions');
     Route::put('model-config', 'AiDev.ConfigController/saveModel');
+    Route::put('model-profiles', 'AiDev.ConfigController/saveModelProfiles');
+    Route::post('model-profiles/refresh', 'AiDev.ConfigController/refreshModelProfiles');
     Route::get('security-rules', 'AiDev.ConfigController/securityRules');
     Route::put('security-rules', 'AiDev.ConfigController/saveSecurityRules');
     Route::get('config-export', 'AiDev.ConfigController/exportConfig');
