@@ -44,6 +44,12 @@ export const api = {
     generateBreakdown: (id, body) => request('POST', `/requirements/${id}/generate-breakdown`, body),
     saveBreakdown: (id, body) => request('PUT', `/requirements/${id}/breakdown`, body),
     confirmBreakdown: (id) => request('POST', `/requirements/${id}/confirm-breakdown`),
+    generateBranch: (id, model = '', draft = false) =>
+      request('POST', `/requirements/${id}/generate-branch`, { model, draft: draft ? 1 : 0 }),
+    saveBranch: (id, finalBranchName) =>
+      request('PUT', `/requirements/${id}/branch`, { final_branch_name: finalBranchName }),
+    checkBranch: (id, finalBranchName) =>
+      request('POST', `/requirements/${id}/check-branch`, { final_branch_name: finalBranchName }),
     tasks: (id) => request('GET', `/requirements/${id}/tasks`),
   },
 
@@ -54,20 +60,25 @@ export const api = {
     update: (id, body) => request('PUT', `/tasks/${id}`, body),
     terminate: (id) => request('POST', `/tasks/${id}/terminate`),
     cleanupWorktree: (id) => request('POST', `/tasks/${id}/cleanup-worktree`),
-    generateBranch: (id, model = '') => request('POST', `/tasks/${id}/generate-branch`, { model }),
+    generateBranch: (id, model = '', draft = false) =>
+      request('POST', `/tasks/${id}/generate-branch`, { model, draft: draft ? 1 : 0 }),
     checkBranch: (id, finalBranchName) =>
       request('POST', `/tasks/${id}/check-branch`, { final_branch_name: finalBranchName }),
-    generatePlan: (id, model = '') => request('POST', `/tasks/${id}/generate-plan`, { model }),
-    generateSpec: (id, model = '') => request('POST', `/tasks/${id}/generate-spec`, { model }),
+    generatePlan: (id, model = '', draft = false) =>
+      request('POST', `/tasks/${id}/generate-plan`, { model, draft: draft ? 1 : 0 }),
     savePlan: (id, planContent) => request('PUT', `/tasks/${id}/plan`, { plan_content: planContent }),
     confirmPlan: (id) => request('POST', `/tasks/${id}/confirm-plan`),
-    execute: (id, model = '') => request('POST', `/tasks/${id}/execute`, { model }),
+    execute: (id, model = '', draft = false) =>
+      request('POST', `/tasks/${id}/execute`, { model, draft: draft ? 1 : 0 }),
     review: (id) => request('POST', `/tasks/${id}/review`),
-    aiReview: (id, model = '') => request('POST', `/tasks/${id}/ai-review`, { model }),
+    aiReview: (id, model = '', draft = false) =>
+      request('POST', `/tasks/${id}/ai-review`, { model, draft: draft ? 1 : 0 }),
     approveReview: (id) => request('POST', `/tasks/${id}/approve-review`),
     rejectReview: (id, feedback) => request('POST', `/tasks/${id}/reject-review`, { feedback }),
-    fix: (id, feedback, model = '') => request('POST', `/tasks/${id}/fix`, { feedback, model }),
-    generateCommitMessage: (id, model = '') => request('POST', `/tasks/${id}/generate-commit-message`, { model }),
+    fix: (id, feedback, model = '', draft = false) =>
+      request('POST', `/tasks/${id}/fix`, { feedback, model, draft: draft ? 1 : 0 }),
+    generateCommitMessage: (id, model = '', draft = false) =>
+      request('POST', `/tasks/${id}/generate-commit-message`, { model, draft: draft ? 1 : 0 }),
     commit: (id, commitMessage) => request('POST', `/tasks/${id}/commit`, { commit_message: commitMessage }),
     push: (id) => request('POST', `/tasks/${id}/push`),
     retrospect: (id) => request('POST', `/tasks/${id}/retrospect`),
@@ -83,6 +94,9 @@ export const api = {
     cancel: (runId) => request('POST', `/runs/${runId}/cancel`),
     retry: (runId, model) =>
       request('POST', `/runs/${runId}/retry`, model !== undefined ? { model } : undefined),
+    updatePrompt: (runId, prompt) => request('PUT', `/runs/${runId}/prompt`, { prompt }),
+    execute: (runId) => request('POST', `/runs/${runId}/execute`),
+    discard: (runId) => request('POST', `/runs/${runId}/discard`),
   },
 
   projects: {
@@ -91,7 +105,8 @@ export const api = {
     update: (id, body) => request('PUT', `/projects/${id}`, body),
     remove: (id) => request('DELETE', `/projects/${id}`),
     scan: () => request('POST', '/projects/scan'),
-    describe: (path, model = '') => request('POST', '/projects/describe', { path, model }),
+    describe: (path, model = '', draft = false) =>
+      request('POST', '/projects/describe', { path, model, draft: draft ? 1 : 0 }),
   },
 
   config: {

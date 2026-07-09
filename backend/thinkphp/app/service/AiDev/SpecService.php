@@ -12,6 +12,10 @@ class SpecService
         if (!$task) {
             throw new \RuntimeException('工单不存在');
         }
+        $project = Db::name('ai_dev_projects')->where('id', (int) $task['project_id'])->find();
+        if (!$project) {
+            throw new \RuntimeException('项目不存在');
+        }
         $doc = Db::name('ai_dev_requirement_docs')->where('id', $task['doc_version_id'])->find();
         if (!$doc || trim((string) $doc['content']) === '') {
             throw new \RuntimeException('需求文档快照缺失');
@@ -24,12 +28,13 @@ class SpecService
             throw new \RuntimeException('未找到已确认的需求拆解');
         }
         $items = json_decode((string) $breakdown['projects_json'], true) ?: [];
-        $entry = ['role' => '其他', 'scope_summary' => ''];
+        $entry = ['role' => '其他', 'scope_summary' => '', 'interfaces' => ''];
         foreach ($items as $it) {
             if ((int) (isset($it['project_id']) ? $it['project_id'] : 0) === (int) $task['project_id']) {
                 $entry = [
                     'role' => isset($it['role']) ? $it['role'] : '其他',
                     'scope_summary' => isset($it['scope_summary']) ? $it['scope_summary'] : '',
+                    'interfaces' => isset($it['interfaces']) ? $it['interfaces'] : '',
                 ];
                 break;
             }
@@ -38,7 +43,7 @@ class SpecService
         return (new RunService())->enqueueGeneration((int) $taskId, 'task_spec', [
             'operation' => 'task_spec',
             'task_id' => (int) $taskId,
-            'prompt' => $this->buildPrompt($doc['content'], $breakdown['content'], $entry['role'], $entry['scope_summary']),
+            'prompt' => $this->buildPrompt($doc['content'], $breakdown['content'], $project, $entry['role'], $entry['scope_summary'], $entry['interfaces']),
             'options' => ['timeout' => 300, 'max_turns' => 3],
         ], 'task:' . (int) $taskId, $model);
     }
@@ -66,19 +71,33 @@ class SpecService
         }
     }
 
-    private function buildPrompt($docContent, $breakdownContent, $role, $scopeSummary)
+    private function buildPrompt($docContent, $breakdownContent, array $project, $role, $scopeSummary, $interfaces)
     {
+        $projectName = isset($project['name']) ? (string) $project['name'] : '';
+        $description = isset($project['description']) ? (string) $project['description'] : '';
         if (mb_strpos((string) $role, '前端') !== false) {
-            $tpl = "本项目是前端。产出【本项目视角】的落地需求子文档,聚焦:页面结构与信息层级、交互流程、每个展示字段及其数据来源标注、敏感字段脱敏规则、空态/异常态。禁止写 SQL、表结构、后端实现。";
+            $tpl = "本项目是前端。子文档聚焦:页面/模块范围、PC/H5 信息层级、筛选与交互流程、展示字段与来源状态、接口消费关系、敏感字段脱敏、空态/异常态、前端验收标准。可以列出需要调用的后端接口和消费字段;禁止定义 SQL、表结构、汇总任务或后端实现。";
         } elseif (mb_strpos((string) $role, '后端') !== false) {
-            $tpl = "本项目是后端/代理。产出【本项目视角】的落地需求子文档,聚焦:接口清单(路径/入参/出参/口径)、数据来源分层、SQL 聚合口径、日志与快照字段。禁止写页面布局与前端交互细节。";
+            $tpl = "本项目是后端/代理。子文档聚焦:只读接口清单、入参/出参/字段口径、数据来源分层、SQL 聚合口径、日志与快照字段、汇总缓存策略、权限与安全、性能限制、后端验收标准。可以简述前端消费场景;禁止展开页面布局、组件、H5 卡片或前端交互实现。";
         } else {
-            $tpl = "产出【本项目视角】的落地需求子文档,只写属于本项目职责范围内的内容。";
+            $tpl = "子文档只写属于本项目职责范围内的内容,并明确与其他项目的依赖边界。";
         }
-        return "你是本项目的负责人。" . $tpl . "\n"
+        return "你是 {$projectName} 项目的需求负责人。" . $tpl . "\n"
             . "只返回 JSON,结构:{\"spec_markdown\":\"...\"},不要 JSON 以外的内容。\n"
-            . "凡涉及跨项目交互,一律写『见共享接口契约』并引用下方拆解中的『跨项目接口契约』小节,不要复述其内容。\n\n"
+            . "拆分原则:\n"
+            . "- 按交付责任重组需求,不要按原文章节机械裁剪。\n"
+            . "- 子文档要能单独给本项目研发阅读,但跨项目 API 的完整 schema 以下方『跨项目接口契约』为唯一事实源。\n"
+            . "- 凡涉及另一个项目负责的实现,只说明依赖/消费关系和验收边界,不要替对方写实现。\n"
+            . "- 必须写清『本项目不负责』的内容,避免计划和编码阶段越界。\n"
+            . "- 不要复制原始需求文档、需求拆解或共享接口契约全文;只提炼本项目需要落地的内容。\n"
+            . "- 正文控制在 4000 到 7000 个中文字符内;不要输出 JSON 代码块,接口只写摘要表,完整 schema 写『见共享接口契约』。\n"
+            . "- 输出结构建议包含:## 目标 / ## 本项目范围 / ## 本项目不负责 / ## 功能需求 / ## 数据与接口依赖 / ## 状态与异常 / ## 安全与脱敏 / ## 验收标准。\n\n"
+            . "# 当前项目\n"
+            . "- name: " . $projectName . "\n"
+            . "- role: " . (string) $role . "\n"
+            . "- description: " . ($description !== '' ? $description : '无') . "\n\n"
             . "# 本项目职责(来自拆解)\n" . ($scopeSummary !== '' ? $scopeSummary : '(未提供,请从原文中判定属于本项目的部分)') . "\n\n"
+            . "# 本项目接口摘要(来自拆解)\n" . ($interfaces !== '' ? $interfaces : '(无)') . "\n\n"
             . "# 需求拆解(含共享接口契约,唯一事实源)\n" . $breakdownContent . "\n\n"
             . "# 原始需求文档(已脱敏,供补全细节)\n" . $docContent . "\n";
     }

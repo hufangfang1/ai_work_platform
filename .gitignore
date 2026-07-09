@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.env.local
 .playwright-cli/
 backend/thinkphp/vendor/
 backend/thinkphp/runtime/

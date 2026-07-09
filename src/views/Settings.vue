@@ -218,7 +218,11 @@
         </el-table-column>
         <el-table-column label="API 地址" min-width="220">
           <template #default="{ row }">
-            <el-input v-model="row.api_base" class="mono" placeholder="可选" />
+            <el-input
+              v-model="row.api_base"
+              class="mono"
+              :placeholder="(row.agent || '').trim() === 'http' ? 'OpenAI 根地址,如 https://api.deepseek.com' : '可选'"
+            />
           </template>
         </el-table-column>
         <el-table-column label="Key 环境变量" min-width="150">
@@ -399,6 +403,15 @@ async function saveAll() {
   )
   if (invalid) {
     ElMessage.error(`HTTP 直调档案「${invalid.key || invalid.label || ''}」必须填写 API 地址和模型参数`)
+    return
+  }
+  const anthropicHttp = modelProfiles.value.find(
+    (p) => (p.agent || '').trim() === 'http' && /\/anthropic\/?$/i.test((p.api_base || '').trim())
+  )
+  if (anthropicHttp) {
+    ElMessage.error(
+      `HTTP 直调档案「${anthropicHttp.key || anthropicHttp.label || ''}」的 API 地址不能用 /anthropic 端点,请改为 OpenAI 根地址(如 https://api.deepseek.com)`
+    )
     return
   }
   await Promise.all([

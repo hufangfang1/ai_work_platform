@@ -7,9 +7,9 @@ use think\facade\Queue;
 
 class RunService
 {
-    const GENERATION_RUN_TYPES = ['requirement_breakdown', 'task_plan', 'project_description', 'ai_review', 'commit_message', 'branch_name'];
+    const GENERATION_RUN_TYPES = ['requirement_breakdown', 'task_spec', 'task_plan', 'project_description', 'ai_review', 'commit_message', 'branch_name'];
 
-    public function enqueueCoding($taskId, $model = '')
+    public function enqueueCoding($taskId, $model = '', $draft = false)
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
         if (!$task || !in_array($task['status'], ['plan_confirmed', 'failed'], true)) {
@@ -19,17 +19,24 @@ class RunService
         if (!$plan) {
             throw new \RuntimeException('没有已确认的开发计划');
         }
+        $blockingDependencies = (new TaskService())->blockingDependencies($task);
+        if ($blockingDependencies) {
+            $names = [];
+            foreach ($blockingDependencies as $dependency) {
+                $names[] = ($dependency['project_name'] !== '' ? $dependency['project_name'] : ('project#' . $dependency['project_id']))
+                    . '(' . $dependency['status'] . ')';
+            }
+            throw new \RuntimeException('依赖工单未完成,暂不能开始 AI 修改: ' . implode('、', $names));
+        }
         $modelKey = (new ModelProfileService())->resolveKey('coding', $model);
         if ((new ModelProfileService())->isHttp($modelKey)) {
             throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
         }
         $run = $this->createRun($taskId, 'coding', $this->buildPrompt($task, $plan, ''), '', $modelKey);
-        Queue::push('app\job\AiDevCodeJob', ['run_id' => $run['id']], 'ai_dev_code');
-        (new TaskService())->updateStatus($taskId, 'coding');
-        return $run;
+        return $this->dispatchOrDraft($run, 'app\job\AiDevCodeJob', $taskId, 'coding', $draft);
     }
 
-    public function enqueueFix($taskId, $feedback, $model = '')
+    public function enqueueFix($taskId, $feedback, $model = '', $draft = false)
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
         if (!$task || !in_array($task['status'], ['review_failed', 'code_changed'])) {
@@ -41,13 +48,11 @@ class RunService
             throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
         }
         $run = $this->createRun($taskId, 'fix', $this->buildPrompt($task, $plan, $feedback), '', $modelKey);
-        Queue::push('app\job\AiDevCodeJob', ['run_id' => $run['id']], 'ai_dev_code');
-        (new TaskService())->updateStatus($taskId, 'fixing');
-        return $run;
+        return $this->dispatchOrDraft($run, 'app\job\AiDevCodeJob', $taskId, 'fixing', $draft);
     }
 
     /** $model 为用户本次指定的模型 key,留空走 step_models 配置默认 */
-    public function enqueueGeneration($taskId, $runType, array $payload, $targetKey = '', $model = '')
+    public function enqueueGeneration($taskId, $runType, array $payload, $targetKey = '', $model = '', $draft = false)
     {
         if (!in_array($runType, self::GENERATION_RUN_TYPES, true)) {
             throw new \RuntimeException('未知 AI 生成任务类型: ' . $runType);
@@ -55,8 +60,94 @@ class RunService
         $modelKey = (new ModelProfileService())->resolveKey($runType, $model);
         $run = $this->createRun($taskId, $runType, json_encode($payload, JSON_UNESCAPED_UNICODE), $targetKey, $modelKey);
         $job = $runType === 'commit_message' ? 'app\job\AiDevCommitMessageJob' : 'app\job\AiDevGenerationJob';
+        // 生成类入队时不改工单状态(ai_review 的 reviewing 由其 service 负责),draft 也无需状态副作用。
+        return $this->dispatchOrDraft($run, $job, 0, '', $draft);
+    }
+
+    /**
+     * 统一收口:draft=true 时只把 run 置为草稿(不入队、不改工单状态),等用户确认后再 executeDraft;
+     * draft=false 时按原逻辑推队列并同步工单状态。
+     */
+    private function dispatchOrDraft(array $run, $job, $taskId, $taskStatus, $draft)
+    {
+        if ($draft) {
+            Db::name('ai_dev_runs')->where('id', $run['id'])->update(['status' => 'draft']);
+            return $this->detail($run['id']);
+        }
         Queue::push($job, ['run_id' => $run['id']], 'ai_dev_code');
+        if ((int) $taskId > 0 && $taskStatus !== '') {
+            (new TaskService())->updateStatus((int) $taskId, $taskStatus);
+        }
         return $run;
+    }
+
+    /** 草稿 run 的提示语改写:保留 {prompt,options} 外壳(生成类),编码/继续修改则是纯文本。 */
+    public function updateDraftPrompt($runId, $prompt)
+    {
+        $run = $this->detail($runId);
+        if (!$run) {
+            throw new \RuntimeException('执行记录不存在');
+        }
+        if ($run['status'] !== 'draft') {
+            throw new \RuntimeException('只有草稿状态的提示语可以编辑');
+        }
+        $decoded = json_decode((string) $run['input'], true);
+        if (is_array($decoded) && array_key_exists('prompt', $decoded)) {
+            $decoded['prompt'] = (string) $prompt;
+            $newInput = json_encode($decoded, JSON_UNESCAPED_UNICODE);
+        } else {
+            $newInput = (string) $prompt;
+        }
+        Db::name('ai_dev_runs')->where('id', $runId)->update(['input' => $newInput]);
+        return $this->detail($runId);
+    }
+
+    /** 把草稿 run 正式推上队列执行,并补上原本在入队时该做的工单状态更新。 */
+    public function executeDraft($runId)
+    {
+        $run = $this->detail($runId);
+        if (!$run) {
+            throw new \RuntimeException('执行记录不存在');
+        }
+        if ($run['status'] !== 'draft') {
+            throw new \RuntimeException('只有草稿状态的执行才能触发');
+        }
+        $runType = $run['run_type'];
+        if (in_array($runType, ['coding', 'fix'], true)) {
+            $job = 'app\job\AiDevCodeJob';
+        } elseif ($runType === 'commit_message') {
+            $job = 'app\job\AiDevCommitMessageJob';
+        } elseif (in_array($runType, self::GENERATION_RUN_TYPES, true)) {
+            $job = 'app\job\AiDevGenerationJob';
+        } else {
+            throw new \RuntimeException('该执行类型暂不支持: ' . $runType);
+        }
+        Db::name('ai_dev_runs')->where('id', $runId)->update(['status' => 'queued']);
+        Queue::push($job, ['run_id' => $runId], 'ai_dev_code');
+        $taskId = (int) $run['task_id'];
+        if ($taskId > 0) {
+            $statusMap = ['coding' => 'coding', 'fix' => 'fixing', 'ai_review' => 'reviewing'];
+            if (isset($statusMap[$runType])) {
+                (new TaskService())->updateStatus($taskId, $statusMap[$runType]);
+            }
+        }
+        return $this->detail($runId);
+    }
+
+    /**
+     * 放弃草稿:直接置为 cancelled。草稿从未改动过工单状态,因此不像 cancel() 那样回滚工单状态。
+     */
+    public function discardDraft($runId)
+    {
+        $run = $this->detail($runId);
+        if (!$run) {
+            throw new \RuntimeException('执行记录不存在');
+        }
+        if ($run['status'] !== 'draft') {
+            throw new \RuntimeException('只有草稿状态可以放弃');
+        }
+        $this->finish($runId, 'cancelled', '', '草稿已放弃');
+        return $this->detail($runId);
     }
 
     public function createRun($taskId, $runType, $input, $targetKey = '', $modelName = '')

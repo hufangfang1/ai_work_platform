@@ -8,7 +8,6 @@ use app\service\AiDev\PlanService;
 use app\service\AiDev\RetrospectiveService;
 use app\service\AiDev\ReviewService;
 use app\service\AiDev\RunService;
-use app\service\AiDev\SpecService;
 use app\service\AiDev\TaskService;
 
 class TaskController extends BaseController
@@ -46,7 +45,7 @@ class TaskController extends BaseController
 
     public function generateBranch($id, BranchService $service)
     {
-        return $this->ok($service->enqueue((int) $id, $this->request->post('model/s', '')), 'queued');
+        return $this->ok($service->enqueue((int) $id, $this->request->post('model/s', ''), (bool) $this->request->post('draft/d', 0)), 'queued');
     }
 
     public function checkBranch($id, BranchService $service)
@@ -56,12 +55,7 @@ class TaskController extends BaseController
 
     public function generatePlan($id, PlanService $service)
     {
-        return $this->ok($service->generate((int) $id, $this->request->post('model/s', '')));
-    }
-
-    public function generateSpec($id, SpecService $service)
-    {
-        return $this->ok($service->generate((int) $id, $this->request->post('model/s', '')));
+        return $this->ok($service->generate((int) $id, $this->request->post('model/s', ''), (bool) $this->request->post('draft/d', 0)));
     }
 
     public function savePlan($id, PlanService $service)
@@ -76,7 +70,7 @@ class TaskController extends BaseController
 
     public function execute($id, RunService $service)
     {
-        return $this->ok($service->enqueueCoding((int) $id, $this->request->post('model/s', '')), 'queued');
+        return $this->ok($service->enqueueCoding((int) $id, $this->request->post('model/s', ''), (bool) $this->request->post('draft/d', 0)), 'queued');
     }
 
     public function review($id, ReviewService $service)
@@ -86,7 +80,7 @@ class TaskController extends BaseController
 
     public function aiReview($id, ReviewService $service)
     {
-        return $this->ok($service->aiReview((int) $id, $this->request->post('model/s', '')));
+        return $this->ok($service->aiReview((int) $id, $this->request->post('model/s', ''), (bool) $this->request->post('draft/d', 0)));
     }
 
     public function approveReview($id, ReviewService $service)
@@ -102,14 +96,14 @@ class TaskController extends BaseController
     public function fix($id, RunService $service)
     {
         return $this->ok(
-            $service->enqueueFix((int) $id, $this->request->post('feedback/s', ''), $this->request->post('model/s', '')),
+            $service->enqueueFix((int) $id, $this->request->post('feedback/s', ''), $this->request->post('model/s', ''), (bool) $this->request->post('draft/d', 0)),
             'queued'
         );
     }
 
     public function generateCommitMessage($id, CommitService $service)
     {
-        return $this->ok($service->generateMessage((int) $id, $this->request->post('model/s', '')));
+        return $this->ok($service->generateMessage((int) $id, $this->request->post('model/s', ''), (bool) $this->request->post('draft/d', 0)));
     }
 
     public function commit($id, CommitService $service)

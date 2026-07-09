@@ -67,6 +67,7 @@ return [
     // 每个步骤(run_type)的默认模型 key,留空 = 不传 --model,走 CLI 全局默认
     'step_models' => [
         'requirement_breakdown' => env('ai_dev.model_breakdown', ''),
+        'task_spec' => env('ai_dev.model_task_spec', ''),
         'task_plan' => env('ai_dev.model_plan', ''),
         'project_description' => env('ai_dev.model_project_description', ''),
         'ai_review' => env('ai_dev.model_ai_review', ''),
@@ -76,4 +77,3 @@ return [
         'fix' => env('ai_dev.model_fix', ''),
     ],
 ];
-

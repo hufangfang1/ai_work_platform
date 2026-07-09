@@ -340,19 +340,26 @@ class ConfigService
                 $env = $this->parseEnvText((string) $profile['env_text']);
             }
 
+            $agent = isset($profile['agent']) && trim((string) $profile['agent']) !== ''
+                ? trim((string) $profile['agent'])
+                : 'claude';
+            $apiBase = isset($profile['api_base']) ? trim((string) $profile['api_base']) : '';
+            // HTTP 直调走 OpenAI 兼容 /chat/completions,不能用 CLI 用的 /anthropic 端点。
+            if ($agent === 'http') {
+                $apiBase = $this->normalizeHttpApiBase($apiBase);
+            }
+
             $normalized[] = [
                 'key' => $key,
                 'label' => isset($profile['label']) && trim((string) $profile['label']) !== ''
                     ? trim((string) $profile['label'])
                     : $key,
-                'agent' => isset($profile['agent']) && trim((string) $profile['agent']) !== ''
-                    ? trim((string) $profile['agent'])
-                    : 'claude',
+                'agent' => $agent,
                 'command' => isset($profile['command']) && trim((string) $profile['command']) !== ''
                     ? trim((string) $profile['command'])
                     : (string) config('ai_dev.agent.command', 'claude'),
                 'model' => isset($profile['model']) ? trim((string) $profile['model']) : '',
-                'api_base' => isset($profile['api_base']) ? trim((string) $profile['api_base']) : '',
+                'api_base' => $apiBase,
                 'api_key_ref' => isset($profile['api_key_ref']) ? trim((string) $profile['api_key_ref']) : '',
                 'context_length' => isset($profile['context_length']) ? (int) $profile['context_length'] : 0,
                 'timeout_seconds' => isset($profile['timeout_seconds']) ? (int) $profile['timeout_seconds'] : 0,
@@ -363,6 +370,19 @@ class ConfigService
             $index++;
         }
         return $normalized;
+    }
+
+    /** HTTP 直调的 api_base 应为 OpenAI 根地址(如 https://api.deepseek.com),不含 /anthropic。 */
+    private function normalizeHttpApiBase($apiBase)
+    {
+        $apiBase = rtrim(trim((string) $apiBase), '/');
+        if ($apiBase === '') {
+            return '';
+        }
+        if (substr($apiBase, -10) === '/anthropic') {
+            return substr($apiBase, 0, -10);
+        }
+        return $apiBase;
     }
 
     private function parseEnvText($text)

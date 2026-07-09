@@ -6,7 +6,7 @@ use think\facade\Db;
 
 class CommitService
 {
-    public function generateMessage($taskId, $model = '')
+    public function generateMessage($taskId, $model = '', $draft = false)
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
         if (!$task) {
@@ -31,7 +31,7 @@ class CommitService
                 'timeout' => 180,
                 'max_turns' => 3,
             ],
-        ], 'task:' . (int) $taskId, $model);
+        ], 'task:' . (int) $taskId, $model, $draft);
     }
 
     public function finishMessageRun(array $run, array $data)

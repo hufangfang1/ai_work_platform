@@ -12,6 +12,9 @@ Route::group('api/ai-dev', function () {
     Route::post('requirements/:id/generate-breakdown', 'AiDev.RequirementController/generateBreakdown');
     Route::put('requirements/:id/breakdown', 'AiDev.RequirementController/saveBreakdown');
     Route::post('requirements/:id/confirm-breakdown', 'AiDev.RequirementController/confirmBreakdown');
+    Route::post('requirements/:id/generate-branch', 'AiDev.RequirementController/generateBranch');
+    Route::put('requirements/:id/branch', 'AiDev.RequirementController/saveBranch');
+    Route::post('requirements/:id/check-branch', 'AiDev.RequirementController/checkBranch');
     Route::get('requirements/:id/tasks', 'AiDev.RequirementController/tasks');
 
     Route::get('tasks', 'AiDev.TaskController/index');
@@ -24,7 +27,6 @@ Route::group('api/ai-dev', function () {
     Route::post('tasks/:id/generate-branch', 'AiDev.TaskController/generateBranch');
     Route::post('tasks/:id/check-branch', 'AiDev.TaskController/checkBranch');
     Route::post('tasks/:id/generate-plan', 'AiDev.TaskController/generatePlan');
-    Route::post('tasks/:id/generate-spec', 'AiDev.TaskController/generateSpec');
     Route::put('tasks/:id/plan', 'AiDev.TaskController/savePlan');
     Route::post('tasks/:id/confirm-plan', 'AiDev.TaskController/confirmPlan');
 
@@ -34,6 +36,9 @@ Route::group('api/ai-dev', function () {
     Route::get('runs/:runId/logs', 'AiDev.RunController/logs');
     Route::post('runs/:runId/cancel', 'AiDev.RunController/cancel');
     Route::post('runs/:runId/retry', 'AiDev.RunController/retry');
+    Route::put('runs/:runId/prompt', 'AiDev.RunController/updatePrompt');
+    Route::post('runs/:runId/execute', 'AiDev.RunController/executeDraft');
+    Route::post('runs/:runId/discard', 'AiDev.RunController/discardDraft');
 
     Route::post('tasks/:id/review', 'AiDev.TaskController/review');
     Route::post('tasks/:id/ai-review', 'AiDev.TaskController/aiReview');

@@ -62,7 +62,7 @@ class ReviewService
      * 只读 AI Review：让 Claude 读取计划、diff 与代码上下文，输出结构化风险结论。
      * 只允许 Read/Glob/Grep，不允许 Edit/Write/Bash。
      */
-    public function aiReview($taskId, $model = '')
+    public function aiReview($taskId, $model = '', $draft = false)
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
         $change = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('created_at', 'desc')->find();
@@ -81,22 +81,23 @@ class ReviewService
         if (!$plan) {
             $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->order('version', 'desc')->find();
         }
-        $doc = Db::name('ai_dev_requirement_docs')->where('id', $task['doc_version_id'])->find();
-
         $this->assertNoRunningAiReview($taskId);
         $run = (new RunService())->enqueueGeneration((int) $taskId, 'ai_review', [
             'operation' => 'ai_review',
             'task_id' => (int) $taskId,
             'change_run_id' => (int) $change['run_id'],
-            'prompt' => $this->buildAiReviewPrompt($task, $plan, $doc, $change),
+            'prompt' => $this->buildAiReviewPrompt($task, $plan, $change),
             'options' => [
                 'cwd' => $worktree,
                 'timeout' => 300,
                 'max_turns' => 12,
                 'allowed_tools' => 'Read,Glob,Grep',
             ],
-        ], 'task:' . (int) $taskId, $model);
-        (new TaskService())->updateStatus($taskId, 'reviewing');
+        ], 'task:' . (int) $taskId, $model, $draft);
+        // 草稿不改工单状态,reviewing 推迟到 executeDraft 时再设。
+        if (!$draft) {
+            (new TaskService())->updateStatus($taskId, 'reviewing');
+        }
         return $run;
     }
 
@@ -213,7 +214,7 @@ class ReviewService
         return [implode("\n\n", $parts), $failed, $checked];
     }
 
-    private function buildAiReviewPrompt(array $task, $plan, $doc, array $change)
+    private function buildAiReviewPrompt(array $task, $plan, array $change)
     {
         $diff = mb_substr((string) $change['git_diff_snapshot'], 0, 50000);
         return "你是资深代码审查员。你只能读取文件和搜索代码，禁止修改任何文件，禁止执行命令。\n"
@@ -221,7 +222,7 @@ class ReviewService
             . "只返回 JSON，不要 Markdown，不要解释 JSON 以外的内容。结构固定为：\n"
             . "{\"status\":\"pass|fail\",\"risk_level\":\"low|medium|high\",\"summary\":\"一句话结论\","
             . "\"blocking_issues\":[\"必须修复的问题\"],\"warnings\":[\"风险提示\"],\"suggestions\":[\"非阻塞建议\"]}\n\n"
-            . "# 需求文档\n" . ($doc ? $doc['content'] : '') . "\n\n"
+            . (new TaskService())->projectContext($task) . "\n\n"
             . "# 本项目职责\n" . ($task['scope_summary'] !== '' ? $task['scope_summary'] : '未填写') . "\n\n"
             . "# 已确认计划\n" . ($plan ? $plan['plan_content'] : '未找到计划') . "\n\n"
             . "# git diff\n" . $diff . "\n";

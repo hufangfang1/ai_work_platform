@@ -31,39 +31,18 @@
             <span class="flow-step__index">1</span>
             <span class="flow-step__title">开发计划</span>
             <span class="flow-step__hint">
-              {{ latestPlan ? `计划 v${latestPlan.version}` : '生成分支与计划,人工确认后执行' }}
+              {{ latestPlan ? `计划 v${latestPlan.version}` : '使用需求分支生成计划,人工确认后执行' }}
             </span>
           </div>
           <div v-if="isOpen(1)" class="flow-step__body">
-            <div class="toolbar">
-              <ModelPicker v-model="branchModel" step="branch_name" />
-              <el-button
-                :loading="branching || branchRunning"
-                :disabled="task.status !== 'created' || branchRunning"
-                @click="generateBranch"
-              >
-                AI 生成分支名
+            <div class="branch-inherited">
+              <div>
+                <div class="metric-label">需求分支</div>
+                <div class="mono">{{ task.final_branch_name || '未生成' }}</div>
+              </div>
+              <el-button v-if="task.requirement" plain @click="$router.push(`/requirements/${task.requirement.id}`)">
+                到需求页维护
               </el-button>
-              <el-input
-                v-model="branchEditor"
-                class="mono"
-                style="width: 320px"
-                placeholder="future/xxx"
-                :disabled="task.status === 'created'"
-              />
-              <el-button :disabled="!branchEditor" @click="saveBranch">保存并校验</el-button>
-              <span v-if="branchCheck" :class="branchCheck.valid ? 'success-text' : 'danger-text'">
-                {{ branchCheck.message }}
-              </span>
-            </div>
-            <AiRunPanel
-              v-if="latestBranchRun"
-              :run="latestBranchRun"
-              :retry-model="branchModel"
-              @refresh="load"
-            />
-            <div v-if="branchRunning" class="empty-state">
-              AI 分支名生成任务已入队，可查看上方日志；完成后会自动回填。
             </div>
             <el-divider style="margin: 4px 0" />
             <div class="toolbar">
@@ -75,6 +54,13 @@
               >
                 <el-icon><MagicStick /></el-icon>
                 {{ latestPlan ? '重新生成计划' : 'AI 生成开发计划' }}
+              </el-button>
+              <el-button
+                plain
+                :disabled="task.status === 'created' || planLocked || planRunning"
+                @click="generatePlan(true)"
+              >
+                编辑提示语
               </el-button>
               <el-button :disabled="!latestPlan || planLocked" @click="savePlan">保存编辑为新版本</el-button>
               <el-button
@@ -135,15 +121,41 @@
             <span class="flow-step__hint">{{ runHint }}</span>
           </div>
           <div v-if="isOpen(2)" class="flow-step__body">
+            <el-alert
+              v-if="task.dependency_blocked"
+              type="warning"
+              :closable="false"
+              title="上游依赖工单未完成，暂不能开始 AI 修改"
+            >
+              <template #default>
+                <div class="dependency-list">
+                  <span
+                    v-for="dependency in task.dependencies"
+                    :key="dependency.project_id"
+                    :class="dependency.ready ? 'success-text' : 'danger-text'"
+                  >
+                    {{ dependency.project_name || `project#${dependency.project_id}` }}：{{ dependency.ready ? '已完成' : getStatusMeta(dependency.status).label }}
+                  </span>
+                </div>
+                <div v-if="task.dependency_reason" class="muted">{{ task.dependency_reason }}</div>
+              </template>
+            </el-alert>
             <div class="toolbar">
               <ModelPicker v-model="codeModel" step="coding" />
               <el-button
                 type="primary"
-                :disabled="!['plan_confirmed', 'failed'].includes(task.status)"
+                :disabled="!['plan_confirmed', 'failed'].includes(task.status) || task.dependency_blocked"
                 @click="execute"
               >
                 <el-icon><VideoPlay /></el-icon>
                 开始 AI 修改
+              </el-button>
+              <el-button
+                plain
+                :disabled="!['plan_confirmed', 'failed'].includes(task.status) || task.dependency_blocked"
+                @click="execute(true)"
+              >
+                编辑提示语
               </el-button>
             </div>
             <AiRunPanel v-if="latestCodeRun" :run="latestCodeRun" @refresh="load" @retried="load" />
@@ -220,6 +232,13 @@
                 @click="aiReview"
               >
                 AI 只读 Review
+              </el-button>
+              <el-button
+                plain
+                :disabled="aiReviewRunning || !['code_changed', 'review_passed', 'review_failed'].includes(task.status)"
+                @click="aiReview(true)"
+              >
+                编辑提示语
               </el-button>
             </div>
             <AiRunPanel
@@ -299,6 +318,9 @@
                 <el-button type="warning" :disabled="!fixFeedback.trim()" @click="fix">
                   继续修改(fix 轮次)
                 </el-button>
+                <el-button plain :disabled="!fixFeedback.trim()" @click="fix(true)">
+                  编辑提示语
+                </el-button>
               </div>
             </div>
           </div>
@@ -323,6 +345,13 @@
                 @click="generateCommitMessage"
               >
                 生成 commit message
+              </el-button>
+              <el-button
+                plain
+                :disabled="task.status !== 'ready_to_commit' || commitMessageRunning"
+                @click="generateCommitMessage(true)"
+              >
+                编辑提示语
               </el-button>
               <el-button
                 type="success"
@@ -421,27 +450,36 @@
             <div class="metric-label">本项目职责</div>
             <div style="font-size: 13px">{{ task.scope_summary || '未填写' }}</div>
           </div>
-          <div v-if="task.spec_markdown || specRunning" class="side-item">
-            <div class="metric-label">
-              本项目需求文档
-              <el-button
-                text
-                type="primary"
-                size="small"
-                :loading="generatingSpec || specRunning"
-                @click="generateSpec"
+          <div v-if="task.dependencies?.length || task.dependents?.length" class="side-item">
+            <div class="metric-label">项目依赖</div>
+            <div v-if="task.dependencies?.length" class="dependency-list">
+              <span
+                v-for="dependency in task.dependencies"
+                :key="dependency.project_id"
+                :class="dependency.ready ? 'success-text' : 'danger-text'"
               >
-                {{ task.spec_markdown ? '重新生成' : '生成' }}
-              </el-button>
+                依赖 {{ dependency.project_name || `project#${dependency.project_id}` }}：{{ dependency.ready ? '已完成' : getStatusMeta(dependency.status).label }}
+              </span>
             </div>
+            <div v-if="task.dependents?.length" class="dependency-list">
+              <span v-for="dependent in task.dependents" :key="dependent.project_id">
+                被 {{ dependent.project_name || `project#${dependent.project_id}` }} 依赖
+              </span>
+            </div>
+          </div>
+          <div v-if="task.has_multi_project_breakdown || task.spec_markdown || specRunning" class="side-item">
+            <div class="metric-label">本项目需求文档</div>
             <div v-if="specRunning" class="muted" style="font-size: 12px">
-              生成任务已入队,完成后自动刷新。
+              历史生成任务进行中,完成后自动刷新。
             </div>
             <el-collapse v-else-if="task.spec_markdown">
               <el-collapse-item title="查看本项目需求文档">
                 <MarkdownView :source="task.spec_markdown" max-height="360px" />
               </el-collapse-item>
             </el-collapse>
+            <div v-else class="muted" style="font-size: 12px">
+              未随当前拆解生成,请回需求页重新拆解需求；完成后会自动同步到工单。
+            </div>
           </div>
           <div class="side-item">
             <div class="metric-label">需求快照 v{{ task.doc_version }}</div>
@@ -477,7 +515,7 @@ import MarkdownView from '../components/MarkdownView.vue'
 import DiffView from '../components/DiffView.vue'
 import AiRunPanel from '../components/AiRunPanel.vue'
 import ModelPicker from '../components/ModelPicker.vue'
-import { canTerminate, runningStatuses } from '../services/status'
+import { canTerminate, getStatusMeta, runningStatuses } from '../services/status'
 import { api } from '../services/api'
 
 const props = defineProps({ id: { type: String, required: true } })
@@ -505,7 +543,6 @@ const commitModel = ref('')
 const openSteps = ref(new Set())
 const branching = ref(false)
 const planning = ref(false)
-const generatingSpec = ref(false)
 const reviewing = ref(false)
 const aiReviewing = ref(false)
 const committing = ref(false)
@@ -658,12 +695,12 @@ function syncTimers() {
   }
 }
 
-async function generateBranch() {
+async function generateBranch(draft = false) {
   branching.value = true
   try {
-    await api.tasks.generateBranch(props.id, branchModel.value)
+    await api.tasks.generateBranch(props.id, branchModel.value, draft === true)
     await load()
-    ElMessage.success('分支名生成任务已入队,完成后自动回填')
+    ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '分支名生成任务已入队,完成后自动回填')
   } finally {
     branching.value = false
   }
@@ -679,25 +716,14 @@ async function saveBranch() {
   await load()
 }
 
-async function generatePlan() {
+async function generatePlan(draft = false) {
   planning.value = true
   try {
-    await api.tasks.generatePlan(props.id, planModel.value)
+    await api.tasks.generatePlan(props.id, planModel.value, draft === true)
     await load()
-    ElMessage.success('计划生成任务已入队')
+    ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '计划生成任务已入队')
   } finally {
     planning.value = false
-  }
-}
-
-async function generateSpec() {
-  generatingSpec.value = true
-  try {
-    await api.tasks.generateSpec(props.id, '')
-    await load()
-    ElMessage.success('本项目需求文档生成任务已入队')
-  } finally {
-    generatingSpec.value = false
   }
 }
 
@@ -713,9 +739,10 @@ async function confirmPlan() {
   await load()
 }
 
-async function execute() {
-  await api.tasks.execute(props.id, codeModel.value)
+async function execute(draft = false) {
+  await api.tasks.execute(props.id, codeModel.value, draft === true)
   await load()
+  if (draft === true) ElMessage.success('已生成草稿，请在弹窗中编辑提示语后执行')
 }
 
 async function review() {
@@ -728,12 +755,12 @@ async function review() {
   }
 }
 
-async function aiReview() {
+async function aiReview(draft = false) {
   aiReviewing.value = true
   try {
-    await api.tasks.aiReview(props.id, reviewModel.value)
+    await api.tasks.aiReview(props.id, reviewModel.value, draft === true)
     await load()
-    ElMessage.success('AI Review 任务已入队')
+    ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : 'AI Review 任务已入队')
   } finally {
     aiReviewing.value = false
   }
@@ -753,10 +780,11 @@ async function cleanupWorktree() {
   }
 }
 
-async function fix() {
-  await api.tasks.fix(props.id, fixFeedback.value, fixModel.value)
+async function fix(draft = false) {
+  await api.tasks.fix(props.id, fixFeedback.value, fixModel.value, draft === true)
   fixFeedback.value = ''
   await load()
+  if (draft === true) ElMessage.success('已生成草稿，请在弹窗中编辑提示语后执行')
 }
 
 async function approveReview() {
@@ -781,9 +809,9 @@ async function rejectReview() {
   ElMessage.warning('已驳回,可在下方发起 fix 轮次让 AI 继续修改')
 }
 
-async function generateCommitMessage() {
-  await api.tasks.generateCommitMessage(props.id, commitModel.value)
-  ElMessage.success('commit message 生成任务已入队')
+async function generateCommitMessage(draft = false) {
+  await api.tasks.generateCommitMessage(props.id, commitModel.value, draft === true)
+  ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : 'commit message 生成任务已入队')
   await load()
 }
 
@@ -825,3 +853,29 @@ onBeforeUnmount(() => {
   if (detailTimer) clearInterval(detailTimer)
 })
 </script>
+
+<style scoped>
+.branch-inherited {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--page-bg);
+}
+
+.dependency-list {
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+}
+
+@media (max-width: 720px) {
+  .branch-inherited {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+</style>

@@ -32,4 +32,22 @@ class RunController extends BaseController
         $model = $this->request->has('model', 'post') ? (string) $this->request->post('model') : null;
         return $this->ok($service->retry((int) $runId, $model), 'queued');
     }
+
+    /** 编辑草稿 run 的提示语(仅草稿态可改)。 */
+    public function updatePrompt($runId, RunService $service)
+    {
+        return $this->ok($service->updateDraftPrompt((int) $runId, (string) $this->request->put('prompt/s', '')));
+    }
+
+    /** 把草稿 run 正式推上队列执行。 */
+    public function executeDraft($runId, RunService $service)
+    {
+        return $this->ok($service->executeDraft((int) $runId), 'queued');
+    }
+
+    /** 放弃草稿 run。 */
+    public function discardDraft($runId, RunService $service)
+    {
+        return $this->ok($service->discardDraft((int) $runId));
+    }
 }

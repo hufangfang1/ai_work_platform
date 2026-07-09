@@ -3,6 +3,7 @@
 namespace app\controller\AiDev;
 
 use app\service\AiDev\BreakdownService;
+use app\service\AiDev\BranchService;
 use app\service\AiDev\RequirementService;
 use think\facade\Db;
 
@@ -45,7 +46,8 @@ class RequirementController extends BaseController
         return $this->ok($service->generate(
             (int) $id,
             is_array($projectIds) ? $projectIds : [],
-            $this->request->post('model/s', '')
+            $this->request->post('model/s', ''),
+            (bool) $this->request->post('draft/d', 0)
         ));
     }
 
@@ -61,6 +63,21 @@ class RequirementController extends BaseController
     public function confirmBreakdown($id, BreakdownService $service)
     {
         return $this->ok($service->confirm((int) $id));
+    }
+
+    public function generateBranch($id, BranchService $service)
+    {
+        return $this->ok($service->enqueueForRequirement((int) $id, $this->request->post('model/s', ''), (bool) $this->request->post('draft/d', 0)), 'queued');
+    }
+
+    public function saveBranch($id, BranchService $service)
+    {
+        return $this->ok($service->saveForRequirement((int) $id, $this->request->put('final_branch_name/s', '')));
+    }
+
+    public function checkBranch($id, BranchService $service)
+    {
+        return $this->ok($service->checkForRequirement((int) $id, $this->request->post('final_branch_name/s', '')));
     }
 
     public function tasks($id)

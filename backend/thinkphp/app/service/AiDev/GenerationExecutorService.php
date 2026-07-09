@@ -42,16 +42,20 @@ class GenerationExecutorService
         $modelKey = isset($options['model_profile']) ? (string) $options['model_profile'] : '';
         $this->modelKey = $modelKey;
 
-        // HTTP 直调档案不起子进程,直接发 /chat/completions。
+        // HTTP 直调档案不起子进程,直接发 /chat/completions。请求/响应全过程由 on_log 落库。
         if ($modelProfile->isHttp($modelKey)) {
             $runService->markRunning($runId, 0);
-            $runService->appendLog($runId, 'stdout', 'HTTP 直调: ' . $modelKey);
+            $runService->appendLog($runId, 'stdout', 'HTTP 直调档案: ' . $modelKey);
             $text = (new HttpChatService())->complete(
                 $modelProfile->profile($modelKey),
                 $prompt,
-                ['timeout' => $timeout]
+                [
+                    'timeout' => $timeout,
+                    'on_log' => function ($type, $content) use ($runService, $runId) {
+                        $runService->appendLog($runId, $type, $content);
+                    },
+                ]
             );
-            $runService->appendLog($runId, 'stdout', $text);
             return trim($text);
         }
 
@@ -206,11 +210,34 @@ class GenerationExecutorService
         if ($start === false || $end === false || $end <= $start) {
             throw new \RuntimeException('claude 未返回 JSON: ' . mb_substr((string) $raw, 0, 200));
         }
-        $data = json_decode(substr($cleaned, $start, $end - $start + 1), true);
+        $json = substr($cleaned, $start, $end - $start + 1);
+        $data = json_decode($json, true);
+        if (!is_array($data)) {
+            $data = $this->recoverMarkdownField($json) ?: $this->recoverMarkdownField($cleaned);
+        }
         if (!is_array($data)) {
             throw new \RuntimeException('claude JSON 解析失败: ' . mb_substr((string) $raw, 0, 200));
         }
         return $data;
+    }
+
+    private function recoverMarkdownField($json)
+    {
+        foreach (['spec_markdown', 'plan_markdown', 'breakdown_markdown'] as $field) {
+            $pattern = '/"' . preg_quote($field, '/') . '"\s*:\s*"([\s\S]*)"\s*}\s*$/';
+            if (!preg_match($pattern, trim((string) $json), $matches)) {
+                continue;
+            }
+            $decoded = json_decode('"' . $matches[1] . '"', true);
+            if (!is_string($decoded)) {
+                $decoded = stripcslashes($matches[1]);
+            }
+            $decoded = trim($decoded);
+            if ($decoded !== '') {
+                return [$field => $decoded];
+            }
+        }
+        return null;
     }
 
     private function buildFailureMessage($exitCode, $termSignal, $error)

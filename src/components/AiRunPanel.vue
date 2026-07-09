@@ -7,7 +7,7 @@
         <span :class="statusClass(run.status)">{{ statusLabel(run.status) }}</span>
       </div>
       <div class="toolbar">
-        <el-button size="small" plain @click="openLogs">查看日志</el-button>
+        <el-button size="small" plain @click="openLogs">{{ isDraft ? '编辑提示语' : '查看日志' }}</el-button>
         <el-button v-if="isRunning" size="small" type="danger" plain @click="cancel">取消</el-button>
         <el-button v-else-if="canRetry" size="small" plain @click="retry">重试</el-button>
       </div>
@@ -26,33 +26,91 @@
           <span class="chip">{{ runTypeLabel(run.run_type) }}</span>
           <span :class="statusClass(run.status)">{{ statusLabel(run.status) }}</span>
         </div>
-        <div v-if="run.error" class="danger-text ai-run-panel__error">{{ run.error }}</div>
-        <div v-if="visibleLogs.length" class="timeline-log ai-run-panel__logs" ref="logBox">
-          <div
-            v-for="log in visibleLogs"
-            :key="log.seq"
-            class="log-line"
-            :class="`log-line--${log.cls}`"
-          >
-            <code>#{{ log.seq }}</code>
-            <span class="log-type">{{ log.label }}</span>
-            <span class="ai-run-panel__log-text">{{ log.text }}</span>
+
+        <!-- 草稿态:直接编辑本次发给大模型的提示语,不改则用默认内容 -->
+        <div v-if="isDraft" class="ai-run-panel__draft">
+          <div class="ai-run-panel__draft-head">
+            <span class="muted ai-run-panel__prompt-hint">
+              以下是本次将发送给大模型的提示语,可直接编辑;不修改则按默认内容执行。
+            </span>
+            <el-radio-group v-model="draftPreview" size="small">
+              <el-radio-button :value="false">编辑</el-radio-button>
+              <el-radio-button :value="true">预览</el-radio-button>
+            </el-radio-group>
           </div>
+          <MarkdownView
+            v-if="draftPreview"
+            :source="draftPrompt"
+            max-height="520px"
+            class="ai-run-panel__draft-preview"
+          />
+          <el-input
+            v-else
+            v-model="draftPrompt"
+            type="textarea"
+            :autosize="{ minRows: 10, maxRows: 26 }"
+            class="mono ai-run-panel__draft-input"
+          />
         </div>
-        <div v-else-if="run.status === 'queued'" class="muted">
-          <div>任务已入队，等待 Worker 处理…</div>
-          <div class="mono ai-run-panel__worker-tip">
-            若长时间无日志，请在本机启动 Worker：<br />
-            cd backend/thinkphp && php think queue:work --queue ai_dev_code
+
+        <!-- 非草稿态:只读提示语折叠 + 详细日志 -->
+        <template v-else>
+          <el-collapse v-if="promptText" class="ai-run-panel__prompt">
+            <el-collapse-item name="prompt">
+              <template #title>
+                <span class="chip">请求提示语</span>
+                <span class="muted ai-run-panel__prompt-hint">实际发送给大模型的完整 prompt</span>
+              </template>
+              <div class="ai-run-panel__prompt-body">
+                <el-button size="small" plain @click="copyPrompt">复制</el-button>
+                <pre class="ai-run-panel__prompt-text">{{ promptText }}</pre>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+
+          <div v-if="run.error" class="danger-text ai-run-panel__error">{{ run.error }}</div>
+          <div v-if="visibleLogs.length" class="timeline-log ai-run-panel__logs" ref="logBox">
+            <div
+              v-for="log in visibleLogs"
+              :key="log.seq"
+              class="log-line"
+              :class="`log-line--${log.cls}`"
+            >
+              <code>#{{ log.seq }}</code>
+              <span class="log-type">{{ log.label }}</span>
+              <span class="ai-run-panel__log-text">{{ displayText(log) }}</span>
+              <el-button
+                v-if="isClipped(log)"
+                link
+                size="small"
+                class="ai-run-panel__expand"
+                @click="toggleExpand(log.seq)"
+              >
+                {{ isExpanded(log.seq) ? '收起' : '展开全部' }}
+              </el-button>
+            </div>
           </div>
-        </div>
-        <div v-else class="muted">暂无执行日志</div>
+          <div v-else-if="run.status === 'queued'" class="muted">
+            <div>任务已入队，等待 Worker 处理…</div>
+            <div class="mono ai-run-panel__worker-tip">
+              若长时间无日志，请在本机启动 Worker：<br />
+              cd backend/thinkphp && php think queue:work --queue ai_dev_code
+            </div>
+          </div>
+          <div v-else class="muted">暂无执行日志</div>
+        </template>
       </div>
       <template #footer>
         <div class="ai-run-panel__footer">
-          <el-button @click="dialogVisible = false">关闭</el-button>
-          <el-button v-if="isRunning" type="danger" plain @click="cancel">取消</el-button>
-          <el-button v-else-if="canRetry" plain @click="retry">重试</el-button>
+          <template v-if="isDraft">
+            <el-button plain :disabled="executing" @click="discardDraft">放弃</el-button>
+            <el-button type="primary" :loading="executing" @click="saveAndExecute">执行</el-button>
+          </template>
+          <template v-else>
+            <el-button @click="dialogVisible = false">关闭</el-button>
+            <el-button v-if="isRunning" type="danger" plain @click="cancel">取消</el-button>
+            <el-button v-else-if="canRetry" plain @click="retry">重试</el-button>
+          </template>
         </div>
       </template>
     </el-dialog>
@@ -61,7 +119,9 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { api } from '../services/api'
+import MarkdownView from './MarkdownView.vue'
 
 const props = defineProps({
   run: { type: Object, default: null },
@@ -74,17 +134,95 @@ const logLines = ref([])
 const logBox = ref(null)
 const dialogVisible = ref(false)
 const autoOpenedRunId = ref(null)
+const draftPrompt = ref('')
+const draftPreview = ref(false)
+const executing = ref(false)
+const expandedSeqs = ref(new Set())
 let logTimer = null
 
 const isRunning = computed(() => props.run && ['queued', 'running'].includes(props.run.status))
 const canRetry = computed(() => props.run && ['failed', 'cancelled'].includes(props.run.status))
-const shouldAutoOpen = computed(() => props.run && ['queued', 'running', 'failed'].includes(props.run.status))
+const isDraft = computed(() => props.run?.status === 'draft')
+const shouldAutoOpen = computed(
+  () => props.run && ['draft', 'queued', 'running', 'failed'].includes(props.run.status),
+)
+
+// run.input:编码/继续修改是纯文本 prompt;生成类是 {prompt,options} JSON,取其中的 prompt。
+function extractPrompt(input) {
+  if (!input || typeof input !== 'string') return ''
+  try {
+    const parsed = JSON.parse(input)
+    if (parsed && typeof parsed === 'object' && typeof parsed.prompt === 'string') return parsed.prompt
+  } catch (error) {
+    /* 纯文本 prompt */
+  }
+  return input
+}
+
+const promptText = computed(() => extractPrompt(props.run?.input))
+
+async function copyPrompt() {
+  try {
+    await navigator.clipboard.writeText(promptText.value)
+    ElMessage.success('提示语已复制')
+  } catch (error) {
+    ElMessage.error('复制失败,请手动选择')
+  }
+}
+
+// 日志展开:describeLog 保留完整文本,这里默认截断展示,超长时可逐行展开。
+const DISPLAY_LIMIT = 800
+function isExpanded(seq) {
+  return expandedSeqs.value.has(seq)
+}
+function toggleExpand(seq) {
+  const next = new Set(expandedSeqs.value)
+  next.has(seq) ? next.delete(seq) : next.add(seq)
+  expandedSeqs.value = next
+}
+function isClipped(log) {
+  return (log.text || '').length > DISPLAY_LIMIT
+}
+function displayText(log) {
+  const text = log.text || ''
+  if (isExpanded(log.seq) || text.length <= DISPLAY_LIMIT) return text
+  return `${text.slice(0, DISPLAY_LIMIT)}…`
+}
+
+async function saveAndExecute() {
+  if (!props.run) return
+  executing.value = true
+  try {
+    // 只有真正改动过才回写,避免无谓写库。
+    if (draftPrompt.value !== promptText.value) {
+      await api.runs.updatePrompt(props.run.id, draftPrompt.value)
+    }
+    const run = await api.runs.execute(props.run.id)
+    dialogVisible.value = false
+    emit('retried', run)
+    emit('refresh')
+  } catch (error) {
+    /* request 已弹错误提示 */
+  } finally {
+    executing.value = false
+  }
+}
+
+async function discardDraft() {
+  if (!props.run) return
+  await api.runs.discard(props.run.id)
+  dialogVisible.value = false
+  emit('refresh')
+}
 
 watch(
   () => props.run?.id,
   () => {
     logLines.value = []
     dialogVisible.value = false
+    expandedSeqs.value = new Set()
+    draftPrompt.value = extractPrompt(props.run?.input)
+    draftPreview.value = false
     syncPolling()
     maybeAutoOpen()
   },
@@ -105,6 +243,7 @@ watch(dialogVisible, (visible) => {
 
 function statusLabel(status) {
   return {
+    draft: '草稿·待编辑执行',
     queued: '已入队',
     running: '运行中',
     succeeded: '已完成',
@@ -122,6 +261,8 @@ function statusClass(status) {
 function runTypeLabel(type) {
   return {
     requirement_breakdown: '需求拆解',
+    branch_name: '分支名',
+    task_spec: '需求子文档',
     task_plan: '计划生成',
     project_description: '项目描述',
     ai_review: 'AI Review',
@@ -145,6 +286,9 @@ const EVENT_LABEL = {
   test: '测试',
   queue: '队列',
   cancel: '取消',
+  prompt: '提示语',
+  http_request: 'HTTP 请求',
+  http_response: 'HTTP 响应',
   json: '事件',
 }
 
@@ -157,15 +301,15 @@ const SYSTEM_SUBTYPE_LABEL = {
 const visibleLogs = computed(() => logLines.value.map(describeLog).filter(Boolean))
 
 function eventClass(eventType) {
-  if (eventType === 'assistant' || eventType === 'result') return 'assistant'
+  if (eventType === 'assistant' || eventType === 'result' || eventType === 'http_response') return 'assistant'
   if (eventType === 'error' || eventType === 'stderr') return 'error'
-  if (eventType === 'git' || eventType === 'queue' || eventType === 'cancel') return 'git'
+  if (['git', 'queue', 'cancel', 'prompt', 'http_request'].includes(eventType)) return 'git'
   return 'tool'
 }
 
-function clip(text, max = 600) {
-  const value = String(text ?? '').trim()
-  return value.length > max ? `${value.slice(0, max)}…` : value
+// 不在此处截断:保留完整文本,由模板 displayText 按需截断并提供「展开全部」。
+function clip(text) {
+  return String(text ?? '').trim()
 }
 
 // tool_result 的 content 可能是字符串,也可能是 [{type:'text',text}] 数组。
@@ -451,5 +595,58 @@ onBeforeUnmount(() => {
 
 .ai-run-panel__footer {
   justify-content: flex-end;
+}
+
+.ai-run-panel__prompt-hint {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+.ai-run-panel__prompt-body {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.ai-run-panel__prompt-text {
+  width: 100%;
+  min-width: 0;
+  max-height: min(40vh, 360px);
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ai-run-panel__draft {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-run-panel__draft-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-run-panel__draft-preview {
+  border: 1px solid var(--el-border-color, #dcdfe6);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+
+.ai-run-panel__draft-input :deep(textarea) {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ai-run-panel__expand {
+  margin-left: 6px;
+  vertical-align: baseline;
 }
 </style>

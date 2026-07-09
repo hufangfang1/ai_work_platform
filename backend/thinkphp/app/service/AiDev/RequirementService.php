@@ -79,13 +79,14 @@ class RequirementService
             ->where('requirement_id', $id)->order('version', 'desc')->select()->toArray();
         $requirement['breakdowns'] = Db::name('ai_dev_breakdowns')
             ->where('requirement_id', $id)->order('version', 'desc')->select()->toArray();
-        $requirement['runs'] = (new RunService())->listByTarget('requirement:' . (int) $id, ['requirement_breakdown']);
+        $requirement['runs'] = (new RunService())->listByTarget('requirement:' . (int) $id, ['requirement_breakdown', 'branch_name']);
         $requirement['tasks'] = Db::name('ai_dev_tasks')->alias('t')
             ->leftJoin('ai_dev_projects p', 'p.id = t.project_id')
             ->where('t.requirement_id', $id)
-            ->field('t.id, t.title, t.status, t.final_branch_name, t.scope_summary, t.updated_at, p.name as project_name')
+            ->field('t.id, t.project_id, t.title, t.status, t.final_branch_name, t.scope_summary, t.spec_markdown, t.updated_at, p.name as project_name')
             ->order('t.id', 'asc')
             ->select()->toArray();
+        $requirement['tasks'] = (new TaskService())->attachDependenciesToTasks($requirement['tasks'], (int) $id);
         return $requirement;
     }
 

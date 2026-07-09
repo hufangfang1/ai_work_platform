@@ -6,6 +6,8 @@ use think\facade\Db;
 
 class TaskService
 {
+    const DEPENDENCY_READY_STATUSES = ['committed', 'retrospected'];
+
     public function query(array $filters)
     {
         $query = Db::name('ai_dev_tasks')->alias('t')
@@ -41,14 +43,25 @@ class TaskService
         if ($spec !== '') {
             $breakdown = Db::name('ai_dev_breakdowns')
                 ->where('requirement_id', (int) $task['requirement_id'])
-                ->whereNotNull('confirmed_at')
                 ->order('version', 'desc')->find();
-            $contract = $breakdown ? (string) $breakdown['content'] : '';
+            $contract = $breakdown ? $this->extractSharedContract((string) $breakdown['content']) : '';
             return "# 本项目需求文档(按本项目职责拆解)\n" . $spec . "\n\n"
-                . "# 需求拆解与共享接口契约\n" . $contract . "\n";
+                . "# 共享接口契约\n" . $contract . "\n";
         }
         $doc = Db::name('ai_dev_requirement_docs')->where('id', (int) $task['doc_version_id'])->find();
         return "# 需求文档(已脱敏)\n" . ($doc ? (string) $doc['content'] : '') . "\n";
+    }
+
+    private function extractSharedContract($content)
+    {
+        $content = trim((string) $content);
+        if ($content === '') {
+            return '';
+        }
+        if (preg_match('/^##\s*跨项目接口(?:契约|约定)\s*\R([\s\S]*?)(?=^##\s|\z)/m', $content, $m)) {
+            return "## 跨项目接口契约\n\n" . trim($m[1]) . "\n";
+        }
+        return $content;
     }
 
     /**
@@ -84,18 +97,21 @@ class TaskService
         if (!$project) {
             throw new \RuntimeException('项目不存在: id=' . $item['project_id']);
         }
+        $requirementBranchName = isset($requirement['branch_name']) ? (string) $requirement['branch_name'] : '';
+        $requirementFinalBranchName = isset($requirement['final_branch_name']) ? (string) $requirement['final_branch_name'] : '';
         $id = Db::name('ai_dev_tasks')->insertGetId([
             'requirement_id' => (int) $requirement['id'],
             'doc_version_id' => (int) $doc['id'],
             'scope_summary' => isset($item['scope_summary']) ? $item['scope_summary'] : '',
+            'spec_markdown' => isset($item['spec_markdown']) ? trim((string) $item['spec_markdown']) : '',
             'title' => $requirement['title'] . ' - ' . $project['name'],
             'project_id' => (int) $project['id'],
             'repo_name' => $project['name'],
             'base_branch' => $project['default_base_branch'],
             'branch_prefix' => $project['default_branch_prefix'],
-            'branch_name' => '',
-            'final_branch_name' => '',
-            'status' => 'created',
+            'branch_name' => $requirementBranchName,
+            'final_branch_name' => $requirementFinalBranchName,
+            'status' => $requirementFinalBranchName !== '' ? 'branch_generated' : 'created',
             'created_by' => 0,
             'created_at' => date('Y-m-d H:i:s'),
             'updated_at' => date('Y-m-d H:i:s'),
@@ -121,7 +137,169 @@ class TaskService
         $task['changes'] = Db::name('ai_dev_changes')->where('task_id', $id)->order('created_at', 'desc')->select()->toArray();
         $task['reviews'] = Db::name('ai_dev_reviews')->where('task_id', $id)->order('created_at', 'desc')->select()->toArray();
         $task['retrospective'] = Db::name('ai_dev_retrospectives')->where('task_id', $id)->order('created_at', 'desc')->find();
+        $task['has_multi_project_breakdown'] = $this->hasMultiProjectBreakdown($task);
+        $withDependencies = $this->attachDependenciesToTasks([$task], (int) $task['requirement_id']);
+        $task = $withDependencies[0];
         return $task;
+    }
+
+    private function hasMultiProjectBreakdown(array $task)
+    {
+        $breakdown = Db::name('ai_dev_breakdowns')
+            ->where('requirement_id', (int) $task['requirement_id'])
+            ->whereNotNull('confirmed_at')
+            ->order('version', 'desc')->find();
+        if (!$breakdown) {
+            return false;
+        }
+        $items = json_decode((string) $breakdown['projects_json'], true);
+        return is_array($items) && count($items) > 1;
+    }
+
+    public function attachDependenciesToTasks(array $tasks, $requirementId)
+    {
+        if (!$tasks) {
+            return [];
+        }
+        $dependencyMap = $this->dependencyMapForRequirement((int) $requirementId);
+        $allTasks = Db::name('ai_dev_tasks')->alias('t')
+            ->leftJoin('ai_dev_projects p', 'p.id = t.project_id')
+            ->where('t.requirement_id', (int) $requirementId)
+            ->where('t.status', '<>', 'terminated')
+            ->field('t.id, t.project_id, t.status, p.name as project_name')
+            ->select()->toArray();
+        $taskByProjectId = [];
+        foreach ($allTasks as $row) {
+            $taskByProjectId[(int) $row['project_id']] = $row;
+        }
+
+        $dependentMap = [];
+        foreach ($dependencyMap as $projectId => $meta) {
+            foreach ($meta['depends_on_project_ids'] as $dependencyProjectId) {
+                $dependentMap[$dependencyProjectId][] = (int) $projectId;
+            }
+        }
+
+        foreach ($tasks as &$task) {
+            $projectId = (int) (isset($task['project_id']) ? $task['project_id'] : 0);
+            $meta = isset($dependencyMap[$projectId]) ? $dependencyMap[$projectId] : [
+                'depends_on_project_ids' => [],
+                'dependency_reason' => '',
+                'dependency_stage' => 'none',
+            ];
+            $dependencies = [];
+            foreach ($meta['depends_on_project_ids'] as $dependencyProjectId) {
+                $dependencyTask = isset($taskByProjectId[$dependencyProjectId]) ? $taskByProjectId[$dependencyProjectId] : null;
+                $dependencies[] = [
+                    'project_id' => (int) $dependencyProjectId,
+                    'project_name' => $dependencyTask ? $dependencyTask['project_name'] : '',
+                    'task_id' => $dependencyTask ? (int) $dependencyTask['id'] : 0,
+                    'status' => $dependencyTask ? $dependencyTask['status'] : 'missing',
+                    'ready' => $dependencyTask ? in_array($dependencyTask['status'], self::DEPENDENCY_READY_STATUSES, true) : false,
+                ];
+            }
+            $dependents = [];
+            foreach (isset($dependentMap[$projectId]) ? $dependentMap[$projectId] : [] as $dependentProjectId) {
+                $dependentTask = isset($taskByProjectId[$dependentProjectId]) ? $taskByProjectId[$dependentProjectId] : null;
+                $dependents[] = [
+                    'project_id' => (int) $dependentProjectId,
+                    'project_name' => $dependentTask ? $dependentTask['project_name'] : '',
+                    'task_id' => $dependentTask ? (int) $dependentTask['id'] : 0,
+                    'status' => $dependentTask ? $dependentTask['status'] : 'missing',
+                ];
+            }
+            $blocked = false;
+            foreach ($dependencies as $dependency) {
+                if (!$dependency['ready']) {
+                    $blocked = true;
+                    break;
+                }
+            }
+            $task['dependencies'] = $dependencies;
+            $task['dependents'] = $dependents;
+            $task['dependency_reason'] = $meta['dependency_reason'];
+            $task['dependency_stage'] = $meta['dependency_stage'];
+            $task['dependency_blocked'] = $meta['dependency_stage'] === 'before_coding' && $blocked;
+        }
+        unset($task);
+        return $tasks;
+    }
+
+    public function blockingDependencies(array $task)
+    {
+        $withDependencies = $this->attachDependenciesToTasks([$task], (int) $task['requirement_id']);
+        $task = $withDependencies ? $withDependencies[0] : $task;
+        $blocked = [];
+        foreach (isset($task['dependencies']) ? $task['dependencies'] : [] as $dependency) {
+            if (empty($dependency['ready'])) {
+                $blocked[] = $dependency;
+            }
+        }
+        return $blocked;
+    }
+
+    private function dependencyMapForRequirement($requirementId)
+    {
+        $breakdown = Db::name('ai_dev_breakdowns')
+            ->where('requirement_id', (int) $requirementId)
+            ->order('version', 'desc')->find();
+        if (!$breakdown) {
+            return [];
+        }
+        $items = json_decode((string) $breakdown['projects_json'], true);
+        if (!is_array($items)) {
+            return [];
+        }
+        $nameToId = [];
+        $backendIds = [];
+        foreach ($items as $item) {
+            $projectId = (int) (isset($item['project_id']) ? $item['project_id'] : 0);
+            $projectName = isset($item['project_name']) ? trim((string) $item['project_name']) : '';
+            if ($projectId > 0 && $projectName !== '') {
+                $nameToId[$projectName] = $projectId;
+                if (mb_strpos((string) (isset($item['role']) ? $item['role'] : ''), '后端') !== false) {
+                    $backendIds[] = $projectId;
+                }
+            }
+        }
+
+        $map = [];
+        foreach ($items as $item) {
+            $projectId = (int) (isset($item['project_id']) ? $item['project_id'] : 0);
+            if ($projectId <= 0) {
+                continue;
+            }
+            $ids = [];
+            foreach (isset($item['depends_on_project_ids']) && is_array($item['depends_on_project_ids']) ? $item['depends_on_project_ids'] : [] as $id) {
+                $id = (int) $id;
+                if ($id > 0 && $id !== $projectId && !in_array($id, $ids, true)) {
+                    $ids[] = $id;
+                }
+            }
+            if (!$ids && !empty($item['depends_on_projects']) && is_array($item['depends_on_projects'])) {
+                foreach ($item['depends_on_projects'] as $name) {
+                    $name = trim((string) $name);
+                    if (isset($nameToId[$name]) && $nameToId[$name] !== $projectId && !in_array($nameToId[$name], $ids, true)) {
+                        $ids[] = $nameToId[$name];
+                    }
+                }
+            }
+            if (!$ids && mb_strpos((string) (isset($item['role']) ? $item['role'] : ''), '前端') !== false) {
+                foreach ($backendIds as $backendId) {
+                    if ($backendId !== $projectId && !in_array($backendId, $ids, true)) {
+                        $ids[] = $backendId;
+                    }
+                }
+            }
+            $map[$projectId] = [
+                'depends_on_project_ids' => $ids,
+                'dependency_reason' => isset($item['dependency_reason']) && trim((string) $item['dependency_reason']) !== ''
+                    ? (string) $item['dependency_reason']
+                    : ($ids ? '依赖上游项目完成接口契约与实现后再进入编码/联调' : ''),
+                'dependency_stage' => isset($item['dependency_stage']) && $item['dependency_stage'] !== '' ? (string) $item['dependency_stage'] : ($ids ? 'before_coding' : 'none'),
+            ];
+        }
+        return $map;
     }
 
     public function update($id, array $input)

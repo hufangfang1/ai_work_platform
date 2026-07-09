@@ -107,6 +107,9 @@
                     <el-icon><MagicStick /></el-icon>
                     AI 生成
                   </el-button>
+                  <el-button plain :loading="repo.describing" @click="describeOne(repo, true)">
+                    编辑提示语
+                  </el-button>
                 </div>
                 <AiRunPanel
                   v-if="repo.descriptionRun"
@@ -161,6 +164,9 @@
               <el-button :loading="editDescribing" @click="describeEdit">
                 <el-icon><MagicStick /></el-icon>
                 AI 生成
+              </el-button>
+              <el-button plain :loading="editDescribing" @click="describeEdit(true)">
+                编辑提示语
               </el-button>
             </div>
             <AiRunPanel
@@ -276,11 +282,11 @@ async function scan() {
   }
 }
 
-async function describeOne(repo) {
+async function describeOne(repo, draft = false) {
   repo.describing = true
   try {
-    repo.descriptionRun = await api.projects.describe(repo.path)
-    ElMessage.success('项目描述生成任务已入队')
+    repo.descriptionRun = await api.projects.describe(repo.path, '', draft === true)
+    ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '项目描述生成任务已入队')
     syncDescribeTimer()
   } finally {
     repo.describing = false
@@ -332,15 +338,15 @@ function edit(project) {
   editVisible.value = true
 }
 
-async function describeEdit() {
+async function describeEdit(draft = false) {
   if (!editForm.value?.local_path) {
     ElMessage.warning('该项目缺少本地目录,无法读取仓库')
     return
   }
   editDescribing.value = true
   try {
-    editDescriptionRun.value = await api.projects.describe(editForm.value.local_path)
-    ElMessage.success('项目描述生成任务已入队')
+    editDescriptionRun.value = await api.projects.describe(editForm.value.local_path, '', draft === true)
+    ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '项目描述生成任务已入队')
     syncDescribeTimer()
   } finally {
     editDescribing.value = false

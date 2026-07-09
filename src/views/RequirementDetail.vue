@@ -123,6 +123,13 @@
             <el-icon><MagicStick /></el-icon>
             {{ latestBreakdown ? '重新拆解' : 'AI 拆解需求' }}
           </el-button>
+          <el-button
+            plain
+            :disabled="!latestDoc || requirement.status === 'closed'"
+            @click="generateBreakdown(true)"
+          >
+            编辑提示语
+          </el-button>
         </div>
         <div v-if="latestBreakdown && !latestBreakdown.confirmed_at" class="breakdown-version-actions">
           <el-button @click="saveBreakdown">保存编辑为新版本</el-button>
@@ -178,6 +185,16 @@
               </div>
               <div class="card-line">{{ item.scope_summary || '未填写职责' }}</div>
               <div v-if="item.interfaces" class="card-line">接口约定:{{ item.interfaces }}</div>
+              <div v-if="item.depends_on_projects?.length" class="dependency-line">
+                依赖:
+                <span v-for="name in item.depends_on_projects" :key="name">{{ name }}</span>
+              </div>
+              <div v-if="item.dependency_reason" class="card-line">依赖说明:{{ item.dependency_reason }}</div>
+              <el-collapse v-if="item.spec_markdown" class="embedded-spec" @click.stop>
+                <el-collapse-item title="本项目需求文档">
+                  <MarkdownView :source="item.spec_markdown" max-height="300px" />
+                </el-collapse-item>
+              </el-collapse>
             </div>
             <div v-if="!breakdownProjects.length" class="muted">拆解结果中没有项目条目</div>
           </div>
@@ -210,9 +227,97 @@
           <div style="font-weight: 600">{{ task.title }}</div>
           <div v-if="task.final_branch_name" class="card-line mono">{{ task.final_branch_name }}</div>
           <div class="card-line">{{ task.scope_summary || '无职责摘要' }}</div>
+          <div v-if="task.dependencies?.length" class="dependency-line">
+            依赖:
+            <span
+              v-for="dependency in task.dependencies"
+              :key="dependency.project_id"
+              :class="dependency.ready ? 'success-text' : 'danger-text'"
+            >
+              {{ dependency.project_name || `project#${dependency.project_id}` }}({{ dependency.ready ? '已完成' : '未完成' }})
+            </span>
+          </div>
+          <div v-if="task.dependents?.length" class="dependency-line">
+            被依赖:
+            <span v-for="dependent in task.dependents" :key="dependent.project_id">
+              {{ dependent.project_name || `project#${dependent.project_id}` }}
+            </span>
+          </div>
+          <div class="task-card-spec" @click.stop>
+            <el-collapse v-if="task.spec_markdown" class="embedded-spec">
+              <el-collapse-item title="本项目需求文档">
+                <MarkdownView :source="task.spec_markdown" max-height="340px" />
+              </el-collapse-item>
+            </el-collapse>
+            <div v-else class="task-card-spec__empty">
+              本项目需求文档未随拆解生成，请重新拆解需求；完成后会自动同步到工单。
+            </div>
+          </div>
         </div>
       </div>
       <div v-else class="empty-state">确认拆解后将自动为每个项目生成工单</div>
+    </div>
+
+    <!-- 需求分支 -->
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">需求分支</div>
+          <div class="muted">工单生成后维护；同一需求下的所有项目工单复用这一条分支名。</div>
+        </div>
+      </div>
+      <div class="branch-toolbar">
+        <ModelPicker v-model="branchModel" class="branch-model-picker" step="branch_name" />
+        <el-button
+          :loading="branchRunning"
+          :disabled="!canManageBranch || requirement.status === 'closed' || branchRunning"
+          @click="generateBranch"
+        >
+          <el-icon><MagicStick /></el-icon>
+          {{ requirement.final_branch_name ? '重新生成分支名' : 'AI 生成分支名' }}
+        </el-button>
+        <el-button
+          plain
+          :disabled="!canManageBranch || requirement.status === 'closed' || branchRunning"
+          @click="generateBranch(true)"
+        >
+          编辑提示语
+        </el-button>
+        <el-input
+          v-model="branchEditor"
+          class="mono branch-input"
+          placeholder="future/xxx"
+          :disabled="!canManageBranch || requirement.status === 'closed'"
+        />
+        <el-button
+          type="primary"
+          plain
+          :disabled="!canManageBranch || !branchEditor || requirement.status === 'closed'"
+          @click="saveBranch"
+        >
+          保存并同步工单
+        </el-button>
+        <el-button :disabled="!canManageBranch || !branchEditor" @click="checkBranch">校验</el-button>
+      </div>
+      <div v-if="!canManageBranch" class="muted branch-check">
+        请先确认需求拆解并生成工单，再生成需求分支。
+      </div>
+      <div v-if="branchCheck" class="branch-check">
+        <span :class="branchCheck.valid ? 'success-text' : 'danger-text'">{{ branchCheck.message }}</span>
+        <span v-if="branchCheck.projects?.length" class="muted">
+          · {{ branchCheck.projects.map((item) => `${item.project_name}:${item.message}`).join('；') }}
+        </span>
+      </div>
+      <AiRunPanel
+        v-if="latestBranchRun"
+        class="requirement-run-panel"
+        :run="latestBranchRun"
+        :retry-model="branchModel"
+        @refresh="load"
+      />
+      <div v-if="branchRunning" class="empty-state">
+        AI 分支名生成任务已入队，可查看日志；完成后会自动同步到该需求下的工单。
+      </div>
     </div>
 
     <!-- 粘贴文档弹窗 -->
@@ -255,6 +360,9 @@ const allProjects = ref([])
 const selectedProjectIds = ref([])
 const breakdownEditor = ref('')
 const breakdownModel = ref('')
+const branchModel = ref('')
+const branchEditor = ref('')
+const branchCheck = ref(null)
 const breakdownPreview = ref(true)
 const docPreview = ref(true)
 const viewDocId = ref(null)
@@ -293,6 +401,20 @@ const activeBreakdownRun = computed(() =>
 // 始终展示最新一次运行,而不是永远停在某条历史失败记录上
 const latestBreakdownRun = computed(() => breakdownRuns.value[0] || null)
 const breakdownRunning = computed(() => !!activeBreakdownRun.value)
+const branchRuns = computed(() =>
+  (requirement.value?.runs || [])
+    .filter((run) => run.run_type === 'branch_name')
+    .slice()
+    .sort((a, b) => (b.id || 0) - (a.id || 0)),
+)
+const activeBranchRun = computed(() =>
+  branchRuns.value.find((run) => ['queued', 'running'].includes(run.status)),
+)
+const latestBranchRun = computed(() => branchRuns.value[0] || null)
+const branchRunning = computed(() => !!activeBranchRun.value)
+const canManageBranch = computed(() =>
+  (requirement.value?.tasks || []).some((task) => task.status !== 'terminated'),
+)
 
 watch(latestBreakdown, (value) => {
   breakdownEditor.value = value ? value.content : ''
@@ -311,6 +433,7 @@ async function load() {
   requirement.value = detail
   allProjects.value = projects
   docForm.doc_url = requirement.value.doc_url
+  branchEditor.value = requirement.value.final_branch_name || ''
   if (latestDoc.value) viewDocId.value = latestDoc.value.id
   // 已有拆解时,回填其涉及项目,方便「重新拆解」时沿用人工范围
   const ids = breakdownProjects.value.map((item) => item.project_id).filter(Boolean)
@@ -319,10 +442,10 @@ async function load() {
 }
 
 function syncTimer() {
-  if (breakdownRunning.value && !detailTimer) {
+  if ((breakdownRunning.value || branchRunning.value) && !detailTimer) {
     detailTimer = setInterval(() => load().catch(() => {}), 3000)
   }
-  if (!breakdownRunning.value && detailTimer) {
+  if (!breakdownRunning.value && !branchRunning.value && detailTimer) {
     clearInterval(detailTimer)
     detailTimer = null
   }
@@ -345,13 +468,33 @@ async function saveDoc() {
   }
 }
 
-async function generateBreakdown() {
+async function generateBreakdown(draft = false) {
   await api.requirements.generateBreakdown(props.id, {
     project_ids: selectedProjectIds.value,
     model: breakdownModel.value,
+    draft: draft === true ? 1 : 0,
   })
-  ElMessage.success('需求拆解任务已入队')
+  ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '需求拆解任务已入队')
   await load()
+}
+
+async function generateBranch(draft = false) {
+  await api.requirements.generateBranch(props.id, branchModel.value, draft === true)
+  branchCheck.value = null
+  ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '需求分支名生成任务已入队')
+  await load()
+}
+
+async function saveBranch() {
+  const name = branchEditor.value.trim()
+  await api.requirements.saveBranch(props.id, name)
+  branchCheck.value = await api.requirements.checkBranch(props.id, name)
+  ElMessage.success('需求分支已同步到相关工单')
+  await load()
+}
+
+async function checkBranch() {
+  branchCheck.value = await api.requirements.checkBranch(props.id, branchEditor.value.trim())
 }
 
 async function saveBreakdown() {
@@ -395,6 +538,23 @@ onBeforeUnmount(() => {
 <style scoped>
 .requirement-run-panel {
   margin-bottom: 12px;
+}
+
+.branch-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) max-content minmax(260px, 1fr) max-content max-content;
+  gap: 10px;
+  align-items: center;
+}
+
+.branch-model-picker,
+.branch-input {
+  width: 100%;
+}
+
+.branch-check {
+  margin-top: 10px;
+  font-size: 13px;
 }
 
 .doc-preview-toolbar {
@@ -502,7 +662,67 @@ onBeforeUnmount(() => {
   background: var(--page-bg);
 }
 
+.task-card-spec {
+  min-width: 0;
+  margin-top: 2px;
+}
+
+.task-card-spec__empty {
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.dependency-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.embedded-spec {
+  --el-collapse-header-height: 34px;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 0;
+}
+
+.embedded-spec :deep(.el-collapse-item__header) {
+  background: transparent;
+  border-bottom-color: var(--line-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.embedded-spec :deep(.el-collapse-item__wrap) {
+  background: transparent;
+  border-bottom: 0;
+}
+
+.embedded-spec :deep(.el-collapse-item__content) {
+  padding-bottom: 0;
+}
+
+.embedded-spec :deep(.md-view) {
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--page-bg);
+}
+
 @media (max-width: 1100px) {
+  .branch-toolbar {
+    grid-template-columns: minmax(180px, 220px) minmax(260px, 1fr);
+  }
+
+  .branch-toolbar > .el-button {
+    justify-self: start;
+  }
+
   .breakdown-generate-actions {
     grid-template-columns: minmax(220px, 1fr) minmax(180px, 220px);
   }
@@ -521,6 +741,16 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 720px) {
+  .branch-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .branch-toolbar :deep(.el-button) {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+  }
+
   .breakdown-generate-actions {
     grid-template-columns: 1fr;
   }

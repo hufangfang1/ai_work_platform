@@ -19,7 +19,7 @@ class ProjectController extends BaseController
 
     public function describe(ProjectService $service)
     {
-        return $this->ok($service->describe($this->request->post('path/s', ''), $this->request->post('model/s', '')));
+        return $this->ok($service->describe($this->request->post('path/s', ''), $this->request->post('model/s', ''), (bool) $this->request->post('draft/d', 0)));
     }
 
     public function save(ProjectService $service)

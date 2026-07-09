@@ -44,16 +44,20 @@ class CommitMessageExecutorService
         $modelKey = isset($options['model_profile']) ? (string) $options['model_profile'] : '';
         $this->modelKey = $modelKey;
 
-        // HTTP 直调档案不起子进程,直接发 /chat/completions。
+        // HTTP 直调档案不起子进程,直接发 /chat/completions。请求/响应全过程由 on_log 落库。
         if ($modelProfile->isHttp($modelKey)) {
             $runService->markRunning($runId, 0);
-            $runService->appendLog($runId, 'stdout', 'HTTP 直调: ' . $modelKey);
+            $runService->appendLog($runId, 'stdout', 'HTTP 直调档案: ' . $modelKey);
             $text = (new HttpChatService())->complete(
                 $modelProfile->profile($modelKey),
                 $prompt,
-                ['timeout' => $timeout]
+                [
+                    'timeout' => $timeout,
+                    'on_log' => function ($type, $content) use ($runService, $runId) {
+                        $runService->appendLog($runId, $type, $content);
+                    },
+                ]
             );
-            $runService->appendLog($runId, 'stdout', $text);
             return trim($text);
         }
 

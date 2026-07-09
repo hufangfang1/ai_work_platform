@@ -39,7 +39,7 @@ class ProjectService
     /**
      * 让 AI 读取仓库,生成一句话项目描述(供需求拆解判断用)。
      */
-    public function describe($path, $model = '')
+    public function describe($path, $model = '', $draft = false)
     {
         $path = rtrim((string) $path, '/');
         if ($path === '' || !is_dir($path)) {
@@ -58,7 +58,7 @@ class ProjectService
                 'max_turns' => 8,
                 'allowed_tools' => 'Read,Glob,Grep',
             ],
-        ], 'project_path:' . sha1($path), $model);
+        ], 'project_path:' . sha1($path), $model, $draft);
     }
 
     public function finishDescribeRun(array $run, array $data)
