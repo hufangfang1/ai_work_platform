@@ -44,6 +44,19 @@ class CommitMessageExecutorService
         $modelKey = isset($options['model_profile']) ? (string) $options['model_profile'] : '';
         $this->modelKey = $modelKey;
 
+        // HTTP 直调档案不起子进程,直接发 /chat/completions。
+        if ($modelProfile->isHttp($modelKey)) {
+            $runService->markRunning($runId, 0);
+            $runService->appendLog($runId, 'stdout', 'HTTP 直调: ' . $modelKey);
+            $text = (new HttpChatService())->complete(
+                $modelProfile->profile($modelKey),
+                $prompt,
+                ['timeout' => $timeout]
+            );
+            $runService->appendLog($runId, 'stdout', $text);
+            return trim($text);
+        }
+
         $promptFile = sys_get_temp_dir() . '/ai-dev-commit-message-prompt-' . $runId . '.md';
         file_put_contents($promptFile, $prompt);
         // 只读生成 commit message,不改代码。
