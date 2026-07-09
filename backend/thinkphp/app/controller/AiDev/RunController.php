@@ -28,6 +28,8 @@ class RunController extends BaseController
 
     public function retry($runId, RunService $service)
     {
-        return $this->ok($service->retry((int) $runId), 'queued');
+        // 传了 model 字段就按新模型重试(允许空串=走 CLI 默认),没传则沿用原 run 的模型。
+        $model = $this->request->has('model', 'post') ? (string) $this->request->post('model') : null;
+        return $this->ok($service->retry((int) $runId, $model), 'queued');
     }
 }

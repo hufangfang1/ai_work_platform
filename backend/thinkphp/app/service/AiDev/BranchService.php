@@ -6,7 +6,11 @@ use think\facade\Db;
 
 class BranchService
 {
-    public function generateForTask($taskId)
+    /**
+     * 入队一次「AI 生成分支名」任务(异步,和拆解/计划同一套执行器,模型可按步骤单独选)。
+     * $model 为本次指定的模型 key,留空走 step_models 默认。
+     */
+    public function enqueue($taskId, $model = '')
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
         if (!$task) {
@@ -14,9 +18,29 @@ class BranchService
         }
         $doc = Db::name('ai_dev_requirement_docs')->where('id', $task['doc_version_id'])->find();
         $docHead = $doc ? mb_substr((string) $doc['content'], 0, 500) : '';
-        $branchName = $this->makeSlug($task['title'] . "\n" . $task['scope_summary'] . "\n" . $docHead);
+        $payload = [
+            'prompt' => $this->buildPrompt($task, $docHead),
+            'options' => ['timeout' => 120, 'max_turns' => 2],
+        ];
+        return (new RunService())->enqueueGeneration((int) $taskId, 'branch_name', $payload, '', $model);
+    }
+
+    /** 生成任务完成后回填:模型给的名字过一遍 slug 清洗,不合法则回退到本地规则生成。 */
+    public function finishRun(array $run, array $data)
+    {
+        $task = Db::name('ai_dev_tasks')->where('id', $run['task_id'])->find();
+        if (!$task) {
+            throw new \RuntimeException('工单不存在');
+        }
+        $branchName = $this->sanitizeBranchSlug(isset($data['branch_name']) ? (string) $data['branch_name'] : '');
+        if ($branchName === '') {
+            // 模型没给出合法分支名,回退到纯本地 slug,保证一定有可用结果
+            $doc = Db::name('ai_dev_requirement_docs')->where('id', $task['doc_version_id'])->find();
+            $docHead = $doc ? mb_substr((string) $doc['content'], 0, 500) : '';
+            $branchName = $this->makeSlug($task['title'] . "\n" . $task['scope_summary'] . "\n" . $docHead);
+        }
         $finalBranchName = $task['branch_prefix'] . $branchName;
-        Db::name('ai_dev_tasks')->where('id', $taskId)->update([
+        Db::name('ai_dev_tasks')->where('id', $run['task_id'])->update([
             'branch_name' => $branchName,
             'final_branch_name' => $finalBranchName,
             'status' => 'branch_generated',
@@ -26,8 +50,29 @@ class BranchService
         return [
             'branch_name' => $branchName,
             'final_branch_name' => $finalBranchName,
-            'reason' => '根据需求文档提取核心语义生成',
+            'reason' => isset($data['reason']) && trim((string) $data['reason']) !== ''
+                ? trim((string) $data['reason'])
+                : 'AI 根据需求语义生成',
         ];
+    }
+
+    private function buildPrompt(array $task, $docHead)
+    {
+        return "你是资深工程师。根据下面的工单信息,生成一个简洁的 git 分支名。\n"
+            . "要求:kebab-case、全小写、只用 ASCII 字母数字和连字符、不超过 50 字符、体现需求核心语义,不要带任何前缀。\n"
+            . "只返回 JSON,不要多余文字,结构:{\"branch_name\":\"...\",\"reason\":\"简要中文说明\"}\n\n"
+            . "# 工单标题\n" . (string) $task['title'] . "\n\n"
+            . "# 范围说明\n" . (string) $task['scope_summary'] . "\n\n"
+            . "# 需求文档(节选)\n" . (string) $docHead . "\n";
+    }
+
+    /** 把模型给的分支名清洗成合法 git slug;清洗后为空返回 ''(交给调用方回退)。 */
+    public function sanitizeBranchSlug($text)
+    {
+        $slug = strtolower(trim((string) $text));
+        $slug = preg_replace('/[^a-z0-9]+/', '-', $slug);
+        $slug = preg_replace('/-+/', '-', $slug);
+        return trim(substr(trim($slug, '-'), 0, 50), '-');
     }
 
     public function checkForTask($taskId, $finalBranchName)

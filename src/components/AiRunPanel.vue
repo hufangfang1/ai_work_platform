@@ -27,16 +27,16 @@
           <span :class="statusClass(run.status)">{{ statusLabel(run.status) }}</span>
         </div>
         <div v-if="run.error" class="danger-text ai-run-panel__error">{{ run.error }}</div>
-        <div v-if="logLines.length" class="timeline-log ai-run-panel__logs" ref="logBox">
+        <div v-if="visibleLogs.length" class="timeline-log ai-run-panel__logs" ref="logBox">
           <div
-            v-for="log in logLines"
-            :key="log.id"
+            v-for="log in visibleLogs"
+            :key="log.seq"
             class="log-line"
-            :class="`log-line--${logClass(log.event_type)}`"
+            :class="`log-line--${log.cls}`"
           >
             <code>#{{ log.seq }}</code>
-            <span class="log-type">{{ log.event_type }}</span>
-            <span class="ai-run-panel__log-text">{{ logText(log) }}</span>
+            <span class="log-type">{{ log.label }}</span>
+            <span class="ai-run-panel__log-text">{{ log.text }}</span>
           </div>
         </div>
         <div v-else-if="run.status === 'queued'" class="muted">
@@ -65,6 +65,8 @@ import { api } from '../services/api'
 
 const props = defineProps({
   run: { type: Object, default: null },
+  // 传入则重试时改用该模型档案(如需求拆解按当前下拉框选择重试);不传则沿用原 run 的模型。
+  retryModel: { type: String, default: undefined },
 })
 const emit = defineEmits(['refresh', 'retried'])
 
@@ -129,28 +131,202 @@ function runTypeLabel(type) {
   }[type] || type
 }
 
-function logClass(eventType) {
+// 后端把 Claude Code 每行流式 JSON 原样入库,这里统一翻译成干净的中文行,
+// 并过滤掉纯噪音(hook 心跳、空内容),避免面板里出现原始 JSON 和空行。
+const EVENT_LABEL = {
+  system: '系统',
+  assistant: 'AI',
+  user: '工具返回',
+  result: '结果',
+  stdout: '输出',
+  stderr: '错误输出',
+  error: '错误',
+  git: 'Git',
+  test: '测试',
+  queue: '队列',
+  cancel: '取消',
+  json: '事件',
+}
+
+const SYSTEM_SUBTYPE_LABEL = {
+  init: '初始化',
+  task_started: '子任务',
+  task_progress: '子任务',
+}
+
+const visibleLogs = computed(() => logLines.value.map(describeLog).filter(Boolean))
+
+function eventClass(eventType) {
   if (eventType === 'assistant' || eventType === 'result') return 'assistant'
   if (eventType === 'error' || eventType === 'stderr') return 'error'
   if (eventType === 'git' || eventType === 'queue' || eventType === 'cancel') return 'git'
   return 'tool'
 }
 
-function logText(log) {
-  const raw = log.content || ''
-  try {
-    const event = JSON.parse(raw)
-    if (event?.message?.content) {
-      return event.message.content
-        .map((part) => part.text || (part.name ? `[tool] ${part.name}` : ''))
-        .filter(Boolean)
-        .join('\n')
-    }
-    if (event?.result) return String(event.result)
-    return raw.length > 400 ? `${raw.slice(0, 400)}...` : raw
-  } catch (error) {
-    return raw
+function clip(text, max = 600) {
+  const value = String(text ?? '').trim()
+  return value.length > max ? `${value.slice(0, max)}…` : value
+}
+
+// tool_result 的 content 可能是字符串,也可能是 [{type:'text',text}] 数组。
+function toolResultText(content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map((part) => (typeof part === 'string' ? part : part?.text || '')).filter(Boolean).join('\n')
   }
+  return ''
+}
+
+// 把一条 message.content(assistant / user 事件)汇总成可读文本。
+function summarizeContent(content) {
+  if (!Array.isArray(content)) return ''
+  const parts = []
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue
+    if (part.type === 'text' && part.text) parts.push(part.text)
+    else if (part.type === 'thinking' && part.thinking) parts.push(`思考:${part.thinking}`)
+    else if (part.type === 'tool_use') parts.push(`调用工具 ${part.name || ''}`.trim())
+    else if (part.type === 'tool_result') {
+      const text = toolResultText(part.content)
+      if (text) parts.push(text)
+    } else if (part.text) parts.push(part.text)
+  }
+  return parts.join('\n')
+}
+
+// codex CLI 的流式事件用 type 形如 thread.started / turn.started / item.started /
+// item.completed / turn.completed / error,和 Claude Code 的 system/assistant/... 完全不同。
+// 后端把每条事件原样按 event_type=type 入库,这里按 item.type 翻译成可读行,
+// 否则 describeLog 会把它们全部当成未知类型过滤掉,面板在 codex 执行时看起来"卡住"。
+function isCodexEventType(type) {
+  return (
+    type === 'thread.started' ||
+    type === 'turn.started' ||
+    type === 'turn.completed' ||
+    type === 'item.started' ||
+    type === 'item.updated' ||
+    type === 'item.completed'
+  )
+}
+
+function describeCodexItem(phase, item) {
+  const itemType = item.type
+  // 文本类只在完成时输出最终文本,避免流式增量重复刷屏
+  if (itemType === 'agent_message') {
+    if (phase !== 'item.completed') return null
+    const text = clip(item.text || '')
+    return text ? { label: 'AI', cls: 'assistant', text } : null
+  }
+  if (itemType === 'reasoning') {
+    if (phase !== 'item.completed') return null
+    const text = clip(item.text || '')
+    return text ? { label: '思考', cls: 'tool', text: `思考:${text}` } : null
+  }
+  if (itemType === 'command_execution') {
+    // 开始时提示执行的命令;完成时只在失败(退出码非 0)才补一条,成功不刷屏
+    if (phase === 'item.started' || phase === 'item.updated') {
+      const cmd = clip(item.command || '', 300)
+      return cmd ? { label: '命令', cls: 'git', text: `执行命令:${cmd}` } : null
+    }
+    if (phase === 'item.completed') {
+      const code = item.exit_code
+      if (code != null && Number(code) !== 0) {
+        return { label: '命令', cls: 'error', text: `命令退出码 ${code}:${clip(item.aggregated_output || '', 400)}` }
+      }
+    }
+    return null
+  }
+  if (itemType === 'file_change' || itemType === 'patch' || itemType === 'patch_apply') {
+    if (phase !== 'item.completed') return null
+    const changes = Array.isArray(item.changes) ? item.changes : []
+    const files = changes.map((c) => (typeof c === 'string' ? c : c?.path)).filter(Boolean)
+    const text = files.length ? `修改文件:${files.join(', ')}` : '修改文件'
+    return { label: '文件', cls: 'tool', text: clip(text) }
+  }
+  if (itemType === 'mcp_tool_call') {
+    if (phase !== 'item.completed') return null
+    return { label: '工具', cls: 'tool', text: clip(`调用工具 ${item.server || ''} ${item.tool || ''}`.trim()) }
+  }
+  if (itemType === 'web_search') {
+    if (phase !== 'item.completed') return null
+    return { label: '搜索', cls: 'tool', text: clip(`联网搜索:${item.query || ''}`) }
+  }
+  return null
+}
+
+function describeCodex(phase, event) {
+  if (phase === 'thread.started' || phase === 'turn.started' || phase === 'turn.completed') {
+    return null
+  }
+  const item = event.item && typeof event.item === 'object' ? event.item : null
+  if (!item) return null
+  return describeCodexItem(phase, item)
+}
+
+function describeSystem(event) {
+  const sub = event.subtype
+  // hook 心跳 / thinking 心跳无信息量,直接隐藏
+  if (sub === 'hook_started' || sub === 'hook_response' || sub === 'thinking_tokens') return null
+  const label = SYSTEM_SUBTYPE_LABEL[sub] || '系统'
+  let text
+  if (sub === 'init') {
+    text = event.model ? `会话已初始化(模型 ${event.model})` : '会话已初始化'
+  } else if (sub === 'task_started') {
+    const agent = event.subagent_type ? `${event.subagent_type} · ` : ''
+    text = `启动子任务:${agent}${event.description || ''}`
+  } else if (sub === 'task_progress') {
+    const tool = event.last_tool_name ? `${event.last_tool_name} · ` : ''
+    text = `执行中:${tool}${event.description || ''}`
+  } else {
+    text = event.description || event.subtype || '系统事件'
+  }
+  return { label, cls: 'git', text: clip(text) }
+}
+
+// 返回 { seq, label, cls, text };无信息量的行返回 null 以便过滤。
+function describeLog(log) {
+  const type = log.event_type
+  const raw = log.content || ''
+  let event = null
+  try {
+    event = JSON.parse(raw)
+  } catch (error) {
+    event = null
+  }
+
+  // 后端自定义事件(stderr/git/test/error/queue/cancel/stdout)存的是纯文本
+  if (!event || typeof event !== 'object') {
+    const trimmed = raw.trim()
+    // 结构化事件(codex/claude JSON)解析失败,通常是历史超大日志被截断成非法 JSON。
+    // 别把一大段原始 JSON 直接倒出来,给个占位即可(新日志已在后端截断,不会再出现)。
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return { seq: log.seq, label: EVENT_LABEL[type] || type, cls: eventClass(type), text: '（日志过大，已省略）' }
+    }
+    const text = clip(raw)
+    if (!text) return null
+    return { seq: log.seq, label: EVENT_LABEL[type] || type, cls: eventClass(type), text }
+  }
+
+  let info
+  if (isCodexEventType(type)) {
+    info = describeCodex(type, event)
+  } else if (type === 'system') {
+    info = describeSystem(event)
+  } else if (type === 'assistant') {
+    const text = summarizeContent(event?.message?.content)
+    info = text.trim() ? { label: 'AI', cls: 'assistant', text: clip(text) } : null
+  } else if (type === 'user') {
+    const text = summarizeContent(event?.message?.content)
+    info = text.trim() ? { label: '工具返回', cls: 'tool', text: clip(text) } : null
+  } else if (type === 'result') {
+    const text = event.result != null ? String(event.result) : ''
+    info = text.trim() ? { label: '结果', cls: 'assistant', text: clip(text) } : null
+  } else {
+    const text = clip(event.description || event.message || '')
+    info = text ? { label: EVENT_LABEL[type] || type, cls: eventClass(type), text } : null
+  }
+
+  return info ? { seq: log.seq, ...info } : null
 }
 
 function openLogs() {
@@ -181,9 +357,14 @@ async function pollLogs() {
     const afterSeq = logLines.value.length ? logLines.value[logLines.value.length - 1].seq : 0
     const fresh = await api.runs.logs(props.run.id, afterSeq, { silent: true })
     if (fresh.length) {
-      logLines.value = logLines.value.concat(fresh)
-      await nextTick()
-      if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
+      // 多处触发的 pollLogs 可能并发,按 seq 去重避免同一条日志被追加两次
+      const seen = new Set(logLines.value.map((line) => line.seq))
+      const added = fresh.filter((line) => !seen.has(line.seq))
+      if (added.length) {
+        logLines.value = logLines.value.concat(added)
+        await nextTick()
+        if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
+      }
     }
   } catch (error) {
     /* 下一轮重试 */
@@ -196,7 +377,7 @@ async function cancel() {
 }
 
 async function retry() {
-  const run = await api.runs.retry(props.run.id)
+  const run = await api.runs.retry(props.run.id, props.retryModel)
   emit('retried', run)
   emit('refresh')
 }

@@ -179,7 +179,7 @@ class GenerationExecutorService
             if ($type === 'system' && isset($event['subtype']) && $event['subtype'] === 'thinking_tokens') {
                 return;
             }
-            $runService->appendLog($runId, $type, json_encode($event, JSON_UNESCAPED_UNICODE));
+            $runService->appendStreamEvent($runId, $type, $event);
             return;
         }
         $runService->appendLog($runId, 'stdout', $line);
