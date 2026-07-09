@@ -274,7 +274,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusTag from '../components/StatusTag.vue'
 import { api } from '../services/api'
 
-const agentOptions = ['claude', 'codex', 'cursor']
+const agentOptions = ['claude', 'codex', 'cursor', 'http']
 const modelProfiles = ref([])
 const rules = ref([])
 const roots = ref([])
@@ -394,6 +394,13 @@ async function refreshLocalModelProfiles() {
 }
 
 async function saveAll() {
+  const invalid = modelProfiles.value.find(
+    (p) => (p.agent || '').trim() === 'http' && (!(p.api_base || '').trim() || !(p.model || '').trim())
+  )
+  if (invalid) {
+    ElMessage.error(`HTTP 直调档案「${invalid.key || invalid.label || ''}」必须填写 API 地址和模型参数`)
+    return
+  }
   await Promise.all([
     api.config.saveModelProfiles(modelProfiles.value.map(toPayloadModelProfile)),
     api.config.saveSecurityRules(rules.value),
