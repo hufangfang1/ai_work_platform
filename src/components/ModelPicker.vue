@@ -91,10 +91,15 @@ const placeholder = computed(() => {
   return found ? `默认(${found.label})` : '默认模型'
 })
 
+// coding/fix 步骤需要 CLI 的 agent loop,http 直调档案不可用,过滤掉。
+const CODING_STEPS = ['coding', 'fix']
+
 const groupedModels = computed(() => {
   const groups = []
   const index = new Map()
+  const isCodingStep = CODING_STEPS.includes(props.step)
   for (const item of models.value) {
+    if (isCodingStep && (item.agent || '') === 'http') continue
     const agent = item.agent || 'default'
     if (!index.has(agent)) {
       const group = { agent, models: [] }
