@@ -20,6 +20,9 @@ class RunService
             throw new \RuntimeException('没有已确认的开发计划');
         }
         $modelKey = (new ModelProfileService())->resolveKey('coding', $model);
+        if ((new ModelProfileService())->isHttp($modelKey)) {
+            throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
+        }
         $run = $this->createRun($taskId, 'coding', $this->buildPrompt($task, $plan, ''), '', $modelKey);
         Queue::push('app\job\AiDevCodeJob', ['run_id' => $run['id']], 'ai_dev_code');
         (new TaskService())->updateStatus($taskId, 'coding');
@@ -34,6 +37,9 @@ class RunService
         }
         $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->whereNotNull('confirmed_at')->order('version', 'desc')->find();
         $modelKey = (new ModelProfileService())->resolveKey('fix', $model);
+        if ((new ModelProfileService())->isHttp($modelKey)) {
+            throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
+        }
         $run = $this->createRun($taskId, 'fix', $this->buildPrompt($task, $plan, $feedback), '', $modelKey);
         Queue::push('app\job\AiDevCodeJob', ['run_id' => $run['id']], 'ai_dev_code');
         (new TaskService())->updateStatus($taskId, 'fixing');
