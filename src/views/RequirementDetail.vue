@@ -77,8 +77,8 @@
     </div>
 
     <!-- AI 拆解 -->
-    <div class="panel">
-      <div class="panel-header">
+    <div class="panel breakdown-panel">
+      <div class="panel-header breakdown-header">
         <div>
           <div class="panel-title">需求拆解</div>
           <div class="muted">
@@ -91,14 +91,16 @@
             </template>
           </div>
         </div>
-        <div class="toolbar">
+      </div>
+      <div class="breakdown-actions">
+        <div class="breakdown-generate-actions">
           <el-select
             v-model="selectedProjectIds"
+            class="breakdown-project-select"
             multiple
             collapse-tags
             collapse-tags-tooltip
             placeholder="涉及项目(留空=AI 自动判断)"
-            style="width: 260px"
             :disabled="breakdownRunning || requirement.status === 'closed'"
           >
             <el-option
@@ -108,7 +110,11 @@
               :value="p.id"
             />
           </el-select>
-          <ModelPicker v-model="breakdownModel" step="requirement_breakdown" />
+          <ModelPicker
+            v-model="breakdownModel"
+            class="breakdown-model-picker"
+            step="requirement_breakdown"
+          />
           <el-button
             :loading="breakdownRunning"
             :disabled="!latestDoc || requirement.status === 'closed'"
@@ -117,19 +123,20 @@
             <el-icon><MagicStick /></el-icon>
             {{ latestBreakdown ? '重新拆解' : 'AI 拆解需求' }}
           </el-button>
-          <template v-if="latestBreakdown && !latestBreakdown.confirmed_at">
-            <el-button @click="saveBreakdown">保存编辑为新版本</el-button>
-            <el-button type="success" :loading="confirming" @click="confirmBreakdown">
-              <el-icon><Select /></el-icon>
-              确认拆解并生成工单
-            </el-button>
-          </template>
+        </div>
+        <div v-if="latestBreakdown && !latestBreakdown.confirmed_at" class="breakdown-version-actions">
+          <el-button @click="saveBreakdown">保存编辑为新版本</el-button>
+          <el-button type="success" :loading="confirming" @click="confirmBreakdown">
+            <el-icon><Select /></el-icon>
+            确认拆解并生成工单
+          </el-button>
         </div>
       </div>
       <AiRunPanel
         v-if="latestBreakdownRun"
         class="requirement-run-panel"
         :run="latestBreakdownRun"
+        :retry-model="breakdownModel"
         @refresh="load"
       />
 
@@ -137,9 +144,10 @@
         AI 拆解任务已入队，可查看上方日志；完成后会自动刷新拆解结果。
       </div>
       <template v-else-if="latestBreakdown">
-        <div class="split">
+        <div class="breakdown-workspace">
           <div class="breakdown-doc">
-            <div class="toolbar" style="justify-content: flex-end">
+            <div class="breakdown-section-head">
+              <div class="metric-label">拆解内容</div>
               <el-radio-group v-model="breakdownPreview" size="small">
                 <el-radio-button :value="true">预览</el-radio-button>
                 <el-radio-button :value="false">{{ latestBreakdown.confirmed_at ? '原文' : '编辑' }}</el-radio-button>
@@ -155,13 +163,12 @@
               :readonly="!!latestBreakdown.confirmed_at"
             />
           </div>
-          <div style="display: grid; gap: 10px; align-content: start">
+          <div class="breakdown-projects">
             <div class="metric-label">项目分工</div>
             <div
               v-for="(item, index) in breakdownProjects"
               :key="index"
               class="task-card"
-              style="cursor: default"
             >
               <div class="card-title">
                 <span :class="{ 'danger-text': item.unmatched }">
@@ -273,15 +280,18 @@ const breakdownProjects = computed(() => {
     return []
   }
 })
+// 按 id 倒序,最新一次拆解运行永远排在最前
+const breakdownRuns = computed(() =>
+  (requirement.value?.runs || [])
+    .filter((run) => run.run_type === 'requirement_breakdown')
+    .slice()
+    .sort((a, b) => (b.id || 0) - (a.id || 0)),
+)
 const activeBreakdownRun = computed(() =>
-  requirement.value?.runs?.find((run) => ['queued', 'running'].includes(run.status)),
+  breakdownRuns.value.find((run) => ['queued', 'running'].includes(run.status)),
 )
-const latestBreakdownRun = computed(() =>
-  activeBreakdownRun.value
-  || requirement.value?.runs?.find((run) => ['failed', 'cancelled'].includes(run.status))
-  || requirement.value?.runs?.find((run) => run.run_type === 'requirement_breakdown')
-  || null,
-)
+// 始终展示最新一次运行,而不是永远停在某条历史失败记录上
+const latestBreakdownRun = computed(() => breakdownRuns.value[0] || null)
 const breakdownRunning = computed(() => !!activeBreakdownRun.value)
 
 watch(latestBreakdown, (value) => {
@@ -393,6 +403,86 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
 }
 
+.breakdown-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.breakdown-header {
+  align-items: flex-start;
+  margin-bottom: 0;
+}
+
+.breakdown-actions {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.breakdown-generate-actions {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(180px, 220px) max-content;
+  gap: 10px;
+  align-items: center;
+}
+
+.breakdown-project-select,
+.breakdown-model-picker {
+  width: 100%;
+}
+
+.breakdown-version-actions {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.breakdown-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.breakdown-actions :deep(.el-button) {
+  min-width: max-content;
+}
+
+.breakdown-workspace {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.breakdown-section-head {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.breakdown-projects {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.breakdown-projects .task-card,
+.breakdown-projects .task-card:hover {
+  cursor: default;
+}
+
+.breakdown-projects .task-card:hover {
+  border-color: var(--line-soft);
+  transform: none;
+}
+
 .doc-preview :deep(.md-view),
 .breakdown-doc {
   min-width: 0;
@@ -410,5 +500,41 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line-soft);
   border-radius: 6px;
   background: var(--page-bg);
+}
+
+@media (max-width: 1100px) {
+  .breakdown-generate-actions {
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 220px);
+  }
+
+  .breakdown-generate-actions > .el-button {
+    justify-self: start;
+  }
+
+  .breakdown-version-actions {
+    justify-content: flex-start;
+  }
+
+  .breakdown-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .breakdown-generate-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .breakdown-section-head,
+  .breakdown-version-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .breakdown-actions :deep(.el-button) {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+  }
 }
 </style>

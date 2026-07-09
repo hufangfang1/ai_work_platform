@@ -6,8 +6,10 @@ use think\facade\Db;
 
 class AgentExecutorService
 {
-    /** @var array|null stream-json 的最终 result 事件，失败时用于还原真实报错 */
-    private $lastResultEvent = null;
+    /** @var string|null agent 输出的最终结果文本，失败时用于还原真实报错 */
+    private $lastResultText = null;
+    /** @var string 本次运行使用的模型档案 key，决定命令与输出解析走 claude 还是 codex */
+    private $modelKey = '';
 
     public function execute($runId)
     {
@@ -25,16 +27,16 @@ class AgentExecutorService
         file_put_contents($promptFile, $run['input']);
 
         $allowedTools = $this->buildAllowedTools($project);
-        $claudeCommand = function_exists('config') ? config('ai_dev.agent.command', 'claude') : 'claude';
         $modelProfile = new ModelProfileService();
         $modelKey = isset($run['model_name']) ? (string) $run['model_name'] : '';
-        // claude 在 --print 模式下用 stream-json 必须同时带 --verbose,否则直接报错退出。
-        $cmd = sprintf(
-            '%s -p "$(cat %s)" --output-format stream-json --verbose --permission-mode acceptEdits --allowedTools %s --max-turns 50',
-            escapeshellcmd($claudeCommand),
-            escapeshellarg($promptFile),
-            escapeshellarg($allowedTools)
-        ) . $modelProfile->commandArg($modelKey);
+        $this->modelKey = $modelKey;
+        // 编码步骤要在 worktree 里真正改代码,全程无人值守。
+        $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
+            'permission_mode' => 'acceptEdits',
+            'allowed_tools' => $allowedTools,
+            'max_turns' => 50,
+            'edit' => true,
+        ]);
 
         $descriptors = [
             0 => ['pipe', 'r'],
@@ -182,17 +184,14 @@ class AgentExecutorService
         if (trim($error) !== '') {
             $parts[] = trim($error);
         }
-        if (is_array($this->lastResultEvent)) {
-            $detail = isset($this->lastResultEvent['result']) ? trim((string) $this->lastResultEvent['result']) : '';
-            $subtype = isset($this->lastResultEvent['subtype']) ? $this->lastResultEvent['subtype'] : '';
-            if ($detail !== '' || $subtype !== '') {
-                $parts[] = 'result[' . $subtype . ']: ' . mb_substr($detail, 0, 2000);
-            }
+        if ($this->lastResultText !== null && trim((string) $this->lastResultText) !== '') {
+            $parts[] = 'result: ' . mb_substr(trim((string) $this->lastResultText), 0, 2000);
         }
+        $label = (new ModelProfileService())->agentLabel($this->modelKey);
         if ($termSignal > 0) {
-            $parts[] = 'Claude Code 被信号 ' . $termSignal . ' 终止（可能是外部 kill / 队列 worker 超时 / 系统资源限制）';
+            $parts[] = $label . ' 被信号 ' . $termSignal . ' 终止（可能是外部 kill / 队列 worker 超时 / 系统资源限制）';
         } else {
-            $parts[] = 'Claude Code 退出码 ' . $exitCode;
+            $parts[] = $label . ' 退出码 ' . $exitCode;
         }
         return implode("\n", $parts);
     }
@@ -205,15 +204,15 @@ class AgentExecutorService
         $event = json_decode($line, true);
         if (is_array($event)) {
             $type = isset($event['type']) ? $event['type'] : 'json';
-            if ($type === 'result') {
-                $this->lastResultEvent = $event;
+            $resultText = (new ModelProfileService())->streamResultText($this->modelKey, $event);
+            if ($resultText !== null) {
+                $this->lastResultText = $resultText;
             }
             // thinking_tokens 心跳事件量极大且无信息量，不落库
             if ($type === 'system' && isset($event['subtype']) && $event['subtype'] === 'thinking_tokens') {
                 return;
             }
-            $content = json_encode($event, JSON_UNESCAPED_UNICODE);
-            $runService->appendLog($runId, $type, $content);
+            $runService->appendStreamEvent($runId, $type, $event);
             return;
         }
         $runService->appendLog($runId, 'stdout', $line);
@@ -226,9 +225,9 @@ class AgentExecutorService
         exec('git -C ' . escapeshellarg($worktree) . ' diff --name-only', $files);
         exec('git -C ' . escapeshellarg($worktree) . ' diff', $diffLines);
 
-        $summary = 'Claude Code 已完成代码修改，请以 diff 为准进行 Review。';
-        if (is_array($this->lastResultEvent) && !empty($this->lastResultEvent['result'])) {
-            $summary = $this->normalizeChangeSummary((string) $this->lastResultEvent['result']);
+        $summary = 'AI 已完成代码修改，请以 diff 为准进行 Review。';
+        if ($this->lastResultText !== null && trim((string) $this->lastResultText) !== '') {
+            $summary = $this->normalizeChangeSummary((string) $this->lastResultText);
         }
 
         Db::name('ai_dev_changes')->insert([

@@ -20,6 +20,9 @@ class RunService
             throw new \RuntimeException('没有已确认的开发计划');
         }
         $modelKey = (new ModelProfileService())->resolveKey('coding', $model);
+        if ((new ModelProfileService())->isHttp($modelKey)) {
+            throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
+        }
         $run = $this->createRun($taskId, 'coding', $this->buildPrompt($task, $plan, ''), '', $modelKey);
         Queue::push('app\job\AiDevCodeJob', ['run_id' => $run['id']], 'ai_dev_code');
         (new TaskService())->updateStatus($taskId, 'coding');
@@ -34,6 +37,9 @@ class RunService
         }
         $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->whereNotNull('confirmed_at')->order('version', 'desc')->find();
         $modelKey = (new ModelProfileService())->resolveKey('fix', $model);
+        if ((new ModelProfileService())->isHttp($modelKey)) {
+            throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
+        }
         $run = $this->createRun($taskId, 'fix', $this->buildPrompt($task, $plan, $feedback), '', $modelKey);
         Queue::push('app\job\AiDevCodeJob', ['run_id' => $run['id']], 'ai_dev_code');
         (new TaskService())->updateStatus($taskId, 'fixing');
@@ -89,6 +95,32 @@ class RunService
             'error' => $error,
             'finished_at' => date('Y-m-d H:i:s'),
         ]);
+    }
+
+    /**
+     * 落库一条模型流式事件:先把过大的字符串字段(如 codex command_execution 的 aggregated_output,
+     * 常内联整段压缩 JS,单条可达数百 KB)就地截断,再编码入库。
+     * 否则整条 JSON 会超过 sanitizeLogContent 的字节上限、被从字符串中间切断成非法 JSON,
+     * 前端无法解析,只能吐出一大段原始串(旧 run 里 seq 56 就是这样)。
+     */
+    public function appendStreamEvent($runId, $eventType, array $event)
+    {
+        $this->truncateLargeStrings($event);
+        $this->appendLog($runId, $eventType, json_encode($event, JSON_UNESCAPED_UNICODE));
+    }
+
+    private function truncateLargeStrings(&$value, $maxLen = 20000)
+    {
+        if (is_array($value)) {
+            foreach ($value as &$item) {
+                $this->truncateLargeStrings($item, $maxLen);
+            }
+            unset($item);
+            return;
+        }
+        if (is_string($value) && mb_strlen($value) > $maxLen) {
+            $value = mb_substr($value, 0, $maxLen) . '…(truncated)';
+        }
     }
 
     public function appendLog($runId, $eventType, $content)

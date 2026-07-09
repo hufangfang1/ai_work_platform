@@ -4,7 +4,8 @@ namespace app\service\AiDev;
 
 class CommitMessageExecutorService
 {
-    private $lastResultEvent = null;
+    private $lastResultText = null;
+    private $modelKey = '';
 
     public function execute($runId)
     {
@@ -41,15 +42,28 @@ class CommitMessageExecutorService
 
         $modelProfile = new ModelProfileService();
         $modelKey = isset($options['model_profile']) ? (string) $options['model_profile'] : '';
+        $this->modelKey = $modelKey;
+
+        // HTTP 直调档案不起子进程,直接发 /chat/completions。
+        if ($modelProfile->isHttp($modelKey)) {
+            $runService->markRunning($runId, 0);
+            $runService->appendLog($runId, 'stdout', 'HTTP 直调: ' . $modelKey);
+            $text = (new HttpChatService())->complete(
+                $modelProfile->profile($modelKey),
+                $prompt,
+                ['timeout' => $timeout]
+            );
+            $runService->appendLog($runId, 'stdout', $text);
+            return trim($text);
+        }
 
         $promptFile = sys_get_temp_dir() . '/ai-dev-commit-message-prompt-' . $runId . '.md';
         file_put_contents($promptFile, $prompt);
-        $cmd = sprintf(
-            '%s -p "$(cat %s)" --output-format stream-json --verbose --max-turns %d',
-            escapeshellcmd(config('ai_dev.agent.command', 'claude')),
-            escapeshellarg($promptFile),
-            $maxTurns
-        ) . $modelProfile->commandArg($modelKey);
+        // 只读生成 commit message,不改代码。
+        $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
+            'max_turns' => $maxTurns,
+            'edit' => false,
+        ]);
 
         $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $process = proc_open($cmd, $descriptors, $pipes, $cwd, $modelProfile->processEnv($modelKey));
@@ -117,8 +131,8 @@ class CommitMessageExecutorService
             $runService->appendLog($runId, 'error', $message);
             throw new \RuntimeException($message);
         }
-        if (is_array($this->lastResultEvent) && isset($this->lastResultEvent['result'])) {
-            return trim((string) $this->lastResultEvent['result']);
+        if ($this->lastResultText !== null) {
+            return trim((string) $this->lastResultText);
         }
         return trim($output);
     }
@@ -146,13 +160,14 @@ class CommitMessageExecutorService
         $event = json_decode($line, true);
         if (is_array($event)) {
             $type = isset($event['type']) ? $event['type'] : 'json';
-            if ($type === 'result') {
-                $this->lastResultEvent = $event;
+            $resultText = (new ModelProfileService())->streamResultText($this->modelKey, $event);
+            if ($resultText !== null) {
+                $this->lastResultText = $resultText;
             }
             if ($type === 'system' && isset($event['subtype']) && $event['subtype'] === 'thinking_tokens') {
                 return;
             }
-            $runService->appendLog($runId, $type, json_encode($event, JSON_UNESCAPED_UNICODE));
+            $runService->appendStreamEvent($runId, $type, $event);
             return;
         }
         $runService->appendLog($runId, 'stdout', $line);
@@ -179,17 +194,14 @@ class CommitMessageExecutorService
         if (trim($error) !== '') {
             $parts[] = trim($error);
         }
-        if (is_array($this->lastResultEvent)) {
-            $detail = isset($this->lastResultEvent['result']) ? trim((string) $this->lastResultEvent['result']) : '';
-            $subtype = isset($this->lastResultEvent['subtype']) ? $this->lastResultEvent['subtype'] : '';
-            if ($detail !== '' || $subtype !== '') {
-                $parts[] = 'result[' . $subtype . ']: ' . mb_substr($detail, 0, 2000);
-            }
+        if ($this->lastResultText !== null && trim((string) $this->lastResultText) !== '') {
+            $parts[] = 'result: ' . mb_substr(trim((string) $this->lastResultText), 0, 2000);
         }
+        $label = (new ModelProfileService())->agentLabel($this->modelKey);
         if ($termSignal > 0) {
-            $parts[] = 'Claude Code 被信号 ' . $termSignal . ' 终止';
+            $parts[] = $label . ' 被信号 ' . $termSignal . ' 终止';
         } else {
-            $parts[] = 'Claude Code 退出码 ' . $exitCode;
+            $parts[] = $label . ' 退出码 ' . $exitCode;
         }
         return implode("\n", $parts);
     }

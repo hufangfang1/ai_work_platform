@@ -29,6 +29,11 @@ class ConfigController extends BaseController
         return $this->ok($service->model());
     }
 
+    public function modelProfiles(ConfigService $service)
+    {
+        return $this->ok($service->modelProfiles());
+    }
+
     /** 可选模型清单 + 每步默认模型,供前端各 AI 按钮旁的模型下拉框使用 */
     public function modelOptions(ModelProfileService $service)
     {
@@ -41,6 +46,16 @@ class ConfigController extends BaseController
     public function saveModel(ConfigService $service)
     {
         return $this->ok($service->saveModel($this->request->put()));
+    }
+
+    public function saveModelProfiles(ConfigService $service)
+    {
+        return $this->ok($service->saveModelProfiles($this->request->put('profiles/a', [])));
+    }
+
+    public function refreshModelProfiles(ConfigService $service)
+    {
+        return $this->ok($service->refreshLocalModelProfiles());
     }
 
     public function securityRules(ConfigService $service)

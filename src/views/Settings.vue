@@ -3,7 +3,7 @@
     <div class="page-heading">
       <div>
         <h1>设置</h1>
-        <p>模型参数、进入模型前的脱敏规则,以及项目扫描的工作区根目录。</p>
+        <p>模型档案、进入模型前的脱敏规则,以及项目扫描的工作区根目录。</p>
       </div>
       <el-button type="primary" @click="saveAll">
         <el-icon><Select /></el-icon>
@@ -142,82 +142,140 @@
       </template>
     </el-dialog>
 
-    <div class="split">
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">模型配置</div>
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">模型档案</div>
+          <div class="muted">按代理分组管理可选模型；AI 按钮旁的模型下拉会使用这里的启用项。</div>
         </div>
-        <el-form :model="modelConfig" label-position="top" class="form-grid">
-          <el-form-item label="模型供应商">
-            <el-input v-model="modelConfig.provider" />
-          </el-form-item>
-          <el-form-item label="模型名称">
-            <el-input v-model="modelConfig.model_name" class="mono" />
-          </el-form-item>
-          <el-form-item label="API 地址">
-            <el-input v-model="modelConfig.api_base" class="mono" />
-          </el-form-item>
-          <el-form-item label="API Key 引用(环境变量名,不存明文)">
-            <el-input v-model="modelConfig.api_key_ref" class="mono" />
-          </el-form-item>
-          <el-form-item label="最大上下文长度">
-            <el-input-number v-model="modelConfig.context_length" :min="4000" :step="1000" />
-          </el-form-item>
-          <el-form-item label="超时时间(秒)">
-            <el-input-number v-model="modelConfig.timeout_seconds" :min="30" :step="30" />
-          </el-form-item>
-        </el-form>
-      </div>
-
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">脱敏规则</div>
-          <el-button @click="addRule">
+        <div class="toolbar">
+          <el-button :loading="refreshingModels" @click="refreshLocalModelProfiles">
+            <el-icon><Refresh /></el-icon>
+            刷新本机配置
+          </el-button>
+          <el-button @click="addModelProfile">
             <el-icon><Plus /></el-icon>
-            添加规则
+            添加模型
           </el-button>
         </div>
-        <el-table :data="rules">
-          <el-table-column label="启用" width="70">
-            <template #default="{ row }">
-              <el-switch :model-value="!!row.enabled" @update:model-value="row.enabled = $event ? 1 : 0" />
-            </template>
-          </el-table-column>
-          <el-table-column label="匹配正则" min-width="200">
-            <template #default="{ row }">
-              <el-input v-model="row.pattern" class="mono" />
-            </template>
-          </el-table-column>
-          <el-table-column label="替换内容" min-width="140">
-            <template #default="{ row }">
-              <el-input v-model="row.replacement" class="mono" />
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="80">
-            <template #default="{ $index }">
-              <el-button text type="danger" @click="rules.splice($index, 1)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
       </div>
+      <el-table :data="modelProfiles" class="model-profile-table" row-key="key">
+        <el-table-column type="expand" width="42">
+          <template #default="{ row }">
+            <div class="model-profile-extra">
+              <el-form-item label="环境变量覆盖(KEY=value,每行一项)">
+                <el-input
+                  v-model="row.env_text"
+                  type="textarea"
+                  :rows="3"
+                  class="mono"
+                  placeholder="ANTHROPIC_BASE_URL=https://api.example.com"
+                />
+              </el-form-item>
+              <el-form-item label="备注">
+                <el-input v-model="row.description" placeholder="例如:用于长上下文规划、低成本 review 等" />
+              </el-form-item>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="启用" width="70">
+          <template #default="{ row }">
+            <el-switch :model-value="!!row.enabled" @update:model-value="row.enabled = $event ? 1 : 0" />
+          </template>
+        </el-table-column>
+        <el-table-column label="Key" min-width="160">
+          <template #default="{ row }">
+            <el-input v-model="row.key" class="mono" placeholder="codex-gpt-5" />
+          </template>
+        </el-table-column>
+        <el-table-column label="代理" width="150">
+          <template #default="{ row }">
+            <el-select
+              v-model="row.agent"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="选择或输入"
+            >
+              <el-option v-for="agent in agentOptions" :key="agent" :label="agent" :value="agent" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="显示名称" min-width="180">
+          <template #default="{ row }">
+            <el-input v-model="row.label" placeholder="GPT-5 High" />
+          </template>
+        </el-table-column>
+        <el-table-column label="命令" min-width="150">
+          <template #default="{ row }">
+            <el-input v-model="row.command" class="mono" placeholder="claude" />
+          </template>
+        </el-table-column>
+        <el-table-column label="模型参数" min-width="180">
+          <template #default="{ row }">
+            <el-input v-model="row.model" class="mono" placeholder="传给 --model 的值" />
+          </template>
+        </el-table-column>
+        <el-table-column label="API 地址" min-width="220">
+          <template #default="{ row }">
+            <el-input v-model="row.api_base" class="mono" placeholder="可选" />
+          </template>
+        </el-table-column>
+        <el-table-column label="Key 环境变量" min-width="150">
+          <template #default="{ row }">
+            <el-input v-model="row.api_key_ref" class="mono" placeholder="ANTHROPIC_API_KEY" />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ $index }">
+            <el-button text type="danger" @click="modelProfiles.splice($index, 1)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">脱敏规则</div>
+        <el-button @click="addRule">
+          <el-icon><Plus /></el-icon>
+          添加规则
+        </el-button>
+      </div>
+      <el-table :data="rules">
+        <el-table-column label="启用" width="70">
+          <template #default="{ row }">
+            <el-switch :model-value="!!row.enabled" @update:model-value="row.enabled = $event ? 1 : 0" />
+          </template>
+        </el-table-column>
+        <el-table-column label="匹配正则" min-width="200">
+          <template #default="{ row }">
+            <el-input v-model="row.pattern" class="mono" />
+          </template>
+        </el-table-column>
+        <el-table-column label="替换内容" min-width="140">
+          <template #default="{ row }">
+            <el-input v-model="row.replacement" class="mono" />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="80">
+          <template #default="{ $index }">
+            <el-button text type="danger" @click="rules.splice($index, 1)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </div>
   </section>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusTag from '../components/StatusTag.vue'
 import { api } from '../services/api'
 
-const modelConfig = reactive({
-  provider: '',
-  model_name: '',
-  api_base: '',
-  api_key_ref: '',
-  context_length: 0,
-  timeout_seconds: 0,
-})
+const agentOptions = ['claude', 'codex', 'cursor', 'http']
+const modelProfiles = ref([])
 const rules = ref([])
 const roots = ref([])
 const newRoot = ref('')
@@ -229,6 +287,7 @@ const browseLoading = ref(false)
 const migrationStatus = ref({})
 const migrationLoading = ref(false)
 const migrationRunning = ref(false)
+const refreshingModels = ref(false)
 const importVisible = ref(false)
 const importJson = ref('')
 const pathMapFrom = ref('')
@@ -236,13 +295,13 @@ const pathMapTo = ref('')
 const importing = ref(false)
 
 async function load() {
-  const [model, securityRules, workspace, migrations] = await Promise.all([
-    api.config.model(),
+  const [profiles, securityRules, workspace, migrations] = await Promise.all([
+    api.config.modelProfiles(),
     api.config.securityRules(),
     api.config.workspace(),
     api.config.migrationStatus(),
   ])
-  if (model) Object.assign(modelConfig, model)
+  modelProfiles.value = (profiles || []).map(toEditableModelProfile)
   rules.value = securityRules
   roots.value = workspace.roots || []
   migrationStatus.value = migrations || {}
@@ -298,12 +357,56 @@ function addRule() {
   rules.value.push({ pattern: '', replacement: '***', enabled: 1 })
 }
 
+function addModelProfile() {
+  const stamp = Date.now()
+  modelProfiles.value.push({
+    key: `codex-model-${stamp}`,
+    label: '新模型',
+    agent: 'codex',
+    command: 'codex',
+    model: '',
+    api_base: '',
+    api_key_ref: '',
+    context_length: 0,
+    timeout_seconds: 0,
+    env: {},
+    env_text: '',
+    enabled: 1,
+    description: '',
+  })
+}
+
+async function refreshLocalModelProfiles() {
+  await ElMessageBox.confirm(
+    '将从这台电脑的 Claude/Codex/Cursor 配置重新生成模型档案，并覆盖当前列表。确认刷新?',
+    '刷新本机配置',
+    { type: 'warning' },
+  )
+  refreshingModels.value = true
+  try {
+    const profiles = await api.config.refreshModelProfiles()
+    modelProfiles.value = (profiles || []).map(toEditableModelProfile)
+    window.dispatchEvent(new CustomEvent('ai-dev-model-options-updated'))
+    ElMessage.success(`已刷新 ${modelProfiles.value.length} 个本机模型档案`)
+  } finally {
+    refreshingModels.value = false
+  }
+}
+
 async function saveAll() {
+  const invalid = modelProfiles.value.find(
+    (p) => (p.agent || '').trim() === 'http' && (!(p.api_base || '').trim() || !(p.model || '').trim())
+  )
+  if (invalid) {
+    ElMessage.error(`HTTP 直调档案「${invalid.key || invalid.label || ''}」必须填写 API 地址和模型参数`)
+    return
+  }
   await Promise.all([
-    api.config.saveModel({ ...modelConfig }),
+    api.config.saveModelProfiles(modelProfiles.value.map(toPayloadModelProfile)),
     api.config.saveSecurityRules(rules.value),
     api.config.saveWorkspace(roots.value),
   ])
+  window.dispatchEvent(new CustomEvent('ai-dev-model-options-updated'))
   ElMessage.success('设置已保存')
   await load()
 }
@@ -364,4 +467,58 @@ async function importConfig() {
 }
 
 onMounted(load)
+
+function toEditableModelProfile(profile) {
+  return {
+    ...profile,
+    env_text: envToText(profile.env),
+    enabled: profile.enabled ? 1 : 0,
+  }
+}
+
+function toPayloadModelProfile(profile) {
+  return {
+    ...profile,
+    key: (profile.key || '').trim(),
+    label: (profile.label || '').trim(),
+    agent: (profile.agent || '').trim(),
+    command: (profile.command || '').trim(),
+    model: (profile.model || '').trim(),
+    api_base: (profile.api_base || '').trim(),
+    api_key_ref: (profile.api_key_ref || '').trim(),
+    env_text: profile.env_text || '',
+    enabled: profile.enabled ? 1 : 0,
+  }
+}
+
+function envToText(env) {
+  if (!env || typeof env !== 'object') return ''
+  return Object.entries(env)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n')
+}
 </script>
+
+<style scoped>
+.model-profile-table {
+  width: 100%;
+}
+
+.model-profile-extra {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.6fr);
+  gap: 16px;
+  padding: 8px 16px 4px 54px;
+}
+
+.model-profile-extra :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+
+@media (max-width: 980px) {
+  .model-profile-extra {
+    grid-template-columns: 1fr;
+    padding-left: 16px;
+  }
+}
+</style>
