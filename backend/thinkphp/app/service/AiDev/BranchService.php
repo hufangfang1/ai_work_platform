@@ -300,9 +300,15 @@ class BranchService
 
     private function validFinalBranchName($finalBranchName)
     {
-        return (bool) preg_match('/^(?!\/)(?!.*\/\/)[a-z0-9._\/-]+$/', (string) $finalBranchName)
+        $basicValid = (bool) preg_match('/^(?!\/)(?!.*\/\/)[a-z0-9._\/-]+$/', (string) $finalBranchName)
             && strpos((string) $finalBranchName, ' ') === false
             && substr((string) $finalBranchName, -1) !== '/'
             && strlen((string) $finalBranchName) <= 120;
+        if (!$basicValid) {
+            return false;
+        }
+        $output = [];
+        exec('git check-ref-format --branch ' . escapeshellarg((string) $finalBranchName) . ' 2>/dev/null', $output, $code);
+        return $code === 0;
     }
 }

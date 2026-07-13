@@ -136,24 +136,66 @@ class AgentExecutorService
             throw new \RuntimeException('项目本地目录不是 git 仓库');
         }
 
-        $worktree = dirname($repoPath) . '/wt-task-' . $task['id'];
-        if (!is_dir($worktree)) {
+        $worktree = (new WorktreeService())->path($project, $task);
+        if (is_dir($worktree)) {
+            $branchLines = [];
+            exec('git -C ' . escapeshellarg($worktree) . ' rev-parse --abbrev-ref HEAD 2>/dev/null', $branchLines, $branchCode);
+            $actualBranch = $branchCode === 0 && isset($branchLines[0]) ? trim((string) $branchLines[0]) : '';
+            if ($actualBranch !== (string) $task['final_branch_name']) {
+                throw new \RuntimeException('现有 worktree 分支与工单不一致: ' . $actualBranch);
+            }
+            return $worktree;
+        }
+
+        if (trim((string) $task['final_branch_name']) === '' || trim((string) $task['base_branch']) === '') {
+            throw new \RuntimeException('工单分支名或基准分支为空');
+        }
+
+        if ((bool) config('ai_dev.safety.require_clean_repo', false)) {
+            $statusLines = [];
             exec('git -C ' . escapeshellarg($repoPath) . ' status --porcelain', $statusLines);
             if (count($statusLines) > 0) {
                 throw new \RuntimeException('主工作目录存在未提交改动，已阻断执行');
             }
+        }
+
+        $fetchOutput = [];
+        $fetchRefspec = '+refs/heads/' . $task['base_branch'] . ':refs/remotes/origin/' . $task['base_branch'];
+        $fetchCmd = 'git -C ' . escapeshellarg($repoPath) . ' fetch origin ' . escapeshellarg($fetchRefspec) . ' 2>&1';
+        exec($fetchCmd, $fetchOutput, $fetchCode);
+        $runService->appendLog($runId, 'git', "更新基准分支:\n" . implode("\n", $fetchOutput));
+        if ($fetchCode !== 0) {
+            throw new \RuntimeException('更新远程基准分支失败，请检查 origin 和凭据');
+        }
+
+        $localBranchOutput = [];
+        exec(
+            'git -C ' . escapeshellarg($repoPath) . ' show-ref --verify --quiet refs/heads/'
+                . escapeshellarg($task['final_branch_name']),
+            $localBranchOutput,
+            $localBranchCode
+        );
+        if ($localBranchCode === 0) {
             $cmd = sprintf(
-                'git -C %s worktree add %s -b %s origin/%s',
+                'git -C %s worktree add %s %s 2>&1',
+                escapeshellarg($repoPath),
+                escapeshellarg($worktree),
+                escapeshellarg($task['final_branch_name'])
+            );
+        } else {
+            $cmd = sprintf(
+                'git -C %s worktree add %s -b %s origin/%s 2>&1',
                 escapeshellarg($repoPath),
                 escapeshellarg($worktree),
                 escapeshellarg($task['final_branch_name']),
                 escapeshellarg($task['base_branch'])
             );
-            exec($cmd, $output, $code);
-            $runService->appendLog($runId, 'git', implode("\n", $output));
-            if ($code !== 0) {
-                throw new \RuntimeException('创建 git worktree 失败');
-            }
+        }
+        $output = [];
+        exec($cmd, $output, $code);
+        $runService->appendLog($runId, 'git', implode("\n", $output));
+        if ($code !== 0) {
+            throw new \RuntimeException('创建 git worktree 失败: ' . implode("\n", $output));
         }
         return $worktree;
     }
@@ -231,8 +273,8 @@ class AgentExecutorService
     {
         // intent-to-add 让新增文件也出现在 diff / 变更文件列表里，与最终 git add -A 提交的范围一致
         exec('git -C ' . escapeshellarg($worktree) . ' add -A -N');
-        exec('git -C ' . escapeshellarg($worktree) . ' diff --name-only', $files);
-        exec('git -C ' . escapeshellarg($worktree) . ' diff', $diffLines);
+        exec('git -C ' . escapeshellarg($worktree) . ' diff HEAD --name-only', $files);
+        exec('git -C ' . escapeshellarg($worktree) . ' diff HEAD', $diffLines);
 
         $summary = 'AI 已完成代码修改，请以 diff 为准进行 Review。';
         if ($this->lastResultText !== null && trim((string) $this->lastResultText) !== '') {
@@ -249,8 +291,13 @@ class AgentExecutorService
         ]);
         Db::name('ai_dev_reviews')->where('task_id', $task['id'])->delete();
 
-        $testResult = $this->runProjectCommand($worktree, $project['test_command']);
-        $runService->appendLog($run['id'], 'test', $testResult);
+        foreach (['lint_command' => 'lint', 'test_command' => 'test', 'build_command' => 'build'] as $field => $eventType) {
+            $command = trim((string) (isset($project[$field]) ? $project[$field] : ''));
+            if ($command === '') {
+                continue;
+            }
+            $runService->appendLog($run['id'], $eventType, $this->runProjectCommand($worktree, $command));
+        }
     }
 
     private function runProjectCommand($worktree, $command)

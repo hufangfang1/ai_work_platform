@@ -45,8 +45,9 @@ class ProjectService
         if ($path === '' || !is_dir($path)) {
             throw new \RuntimeException('项目目录不存在: ' . $path);
         }
-        $prompt = "阅读当前项目仓库(优先看 README、目录结构、主要源码与依赖清单),"
-            . "用一句不超过 40 字的中文概括该项目的用途与技术栈。"
+        $prompt = "阅读当前项目仓库(至少检查 README、依赖清单、路由/入口、主要目录和已有 API 或页面),"
+            . "用 120 到 200 字中文说明:项目用途、技术栈、主要交付边界、对外提供或消费的能力,以及它明确不负责什么。"
+            . "描述将用于研发负责人判断需求应分配给哪个项目,不要只罗列框架名称,不要根据仓库中不存在的内容猜测。"
             . "只返回 JSON,结构:{\"description\":\"...\"},不要 JSON 以外的内容。";
         return (new RunService())->enqueueGeneration(0, 'project_description', [
             'operation' => 'project_description',
@@ -55,7 +56,7 @@ class ProjectService
             'options' => [
                 'cwd' => $path,
                 'timeout' => 180,
-                'max_turns' => 8,
+                'max_turns' => 12,
                 'allowed_tools' => 'Read,Glob,Grep',
             ],
         ], 'project_path:' . sha1($path), $model, $draft);
@@ -65,10 +66,10 @@ class ProjectService
     {
         $line = isset($data['description']) ? trim((string) $data['description']) : '';
         $line = trim($line, "\"'` 　");
-        if ($line === '') {
-            throw new \RuntimeException('AI 未能生成描述,请重试或手动填写');
+        if (mb_strlen($line) < 40) {
+            throw new \RuntimeException('AI 生成的项目描述过短，无法支持可靠的项目职责判断，请重试或手动填写');
         }
-        return ['description' => $line];
+        return ['description' => mb_substr($line, 0, 500)];
     }
 
     public function update($id, array $input)

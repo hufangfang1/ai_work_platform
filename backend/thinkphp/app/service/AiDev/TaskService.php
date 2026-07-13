@@ -50,6 +50,7 @@ class TaskService
         if ($spec !== '') {
             $breakdown = Db::name('ai_dev_breakdowns')
                 ->where('requirement_id', (int) $task['requirement_id'])
+                ->whereNotNull('confirmed_at')
                 ->order('version', 'desc')->find();
             $contract = $breakdown ? $this->extractSharedContract((string) $breakdown['content']) : '';
             return "# 本项目需求文档(按本项目职责拆解)\n" . $spec . "\n\n"
@@ -408,6 +409,7 @@ class TaskService
     {
         $breakdown = Db::name('ai_dev_breakdowns')
             ->where('requirement_id', (int) $requirementId)
+            ->whereNotNull('confirmed_at')
             ->order('version', 'desc')->find();
         if (!$breakdown) {
             return [];

@@ -1,6 +1,6 @@
 # AI 开发工单台 ThinkPHP 后端
 
-这是一个可启动的 ThinkPHP 后端项目，不是 Node/Express，也不是仅供拷贝的代码片段。当前已安装 ThinkPHP 6 框架，并按开发计划实现 API、MySQL 表结构、Redis Queue Worker 与 Claude Code headless 执行封装。
+这是一个可启动的 ThinkPHP 6 后端项目。Composer 当前固定 `topthink/framework` 6.0.16，并实现 API、MySQL 表结构、Redis Queue Worker 与多种 Agent CLI/HTTP 模型执行封装。
 
 ```text
 ThinkPHP API
@@ -71,5 +71,12 @@ php think queue:work --queue ai_dev_code --tries 1 --sleep 2
 
 - `execute` 只负责入队，不在 HTTP 请求里跑 Claude Code。
 - Worker 使用 `git worktree` 隔离每个工单。
-- Claude Code 使用 `claude -p --output-format stream-json --permission-mode acceptEdits`。
+- Agent 支持 Claude Code/Codex CLI；生成类步骤也可使用 OpenAI 兼容 HTTP 档案。
 - Worker 会把 stream-json 逐行写入 `ai_dev_run_logs`，前端按 `after_seq` 轮询。
+
+## 检查
+
+```bash
+php tests/run.php
+find app config route tests -name '*.php' -print0 | xargs -0 -n1 php -l
+```

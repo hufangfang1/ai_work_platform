@@ -16,7 +16,7 @@ class AiDevGenerationJob
 
         try {
             $run = $runService->detail($runId);
-            if (!$run || $run['status'] === 'cancelled') {
+            if (!$run || $run['status'] !== 'queued') {
                 $job->delete();
                 return;
             }

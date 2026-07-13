@@ -300,6 +300,11 @@ class GenerationExecutorService
             if (!is_array($data)) {
                 continue;
             }
+            // 拆解、规格、计划、分支名等生成任务没有 status 字段。此前这里把
+            // AI Review 的择优规则错误地用于所有任务，导致合法 JSON 被丢弃。
+            if (!isset($data['status'])) {
+                return $data;
+            }
             if (!empty($data['blocking_issues'])) {
                 return $data;
             }
@@ -320,7 +325,7 @@ class GenerationExecutorService
             return $fallback;
         }
         throw new \RuntimeException(
-            'claude JSON 解析失败(可能输出超长被截断,可调大 ai_dev.max_output_tokens): '
+            'AI 返回结果不是可识别的 JSON(也可能因输出过长被截断): '
             . mb_substr((string) $raw, 0, 200)
         );
     }

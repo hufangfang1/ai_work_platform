@@ -33,7 +33,8 @@ return [
     ],
     'safety' => [
         'allow_push_default' => false,
-        'require_clean_repo' => true,
+        // 编码发生在独立 worktree，主工作目录存在未提交改动不会污染工单分支。
+        'require_clean_repo' => false,
     ],
     /*
      * 可选模型档案:key 是前端/接口里用的标识。

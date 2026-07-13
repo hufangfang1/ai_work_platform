@@ -33,12 +33,29 @@ class BreakdownService
                 throw new \RuntimeException('所选项目无效,请重新选择');
             }
         }
+        $missingDescriptions = [];
+        foreach ($candidates as $candidate) {
+            if (mb_strlen(trim((string) $candidate['description'])) < 40) {
+                $missingDescriptions[] = (string) $candidate['name'];
+            }
+        }
+        if ($missingDescriptions) {
+            $preview = array_slice($missingDescriptions, 0, 8);
+            $suffix = count($missingDescriptions) > count($preview)
+                ? ' 等 ' . count($missingDescriptions) . ' 个项目'
+                : '';
+            throw new \RuntimeException(
+                '以下候选项目缺少可用于职责判断的项目描述，请先在项目页生成或补充描述: '
+                . implode('、', $preview) . $suffix
+            );
+        }
 
         $targetKey = 'requirement:' . (int) $requirementId;
         $this->assertNoRunningBreakdown($targetKey);
         return (new RunService())->enqueueGeneration(0, 'requirement_breakdown', [
             'operation' => 'requirement_breakdown',
             'requirement_id' => (int) $requirementId,
+            'doc_version_id' => (int) $doc['id'],
             'project_ids' => array_map('intval', $projectIds),
             'prompt' => $this->buildPrompt($doc['content'], $candidates, $manual),
             'options' => [
@@ -104,8 +121,11 @@ class BreakdownService
                 'unmatched' => !isset($nameMap[$projectName]),
             ];
         }
+        $expectedProjectIds = isset($payload['project_ids']) && is_array($payload['project_ids'])
+            ? array_map('intval', $payload['project_ids'])
+            : [];
+        $this->assertValidBreakdown($markdown, $normalized, $expectedProjectIds);
         $breakdown = $this->saveVersion($requirementId, $markdown, $normalized, 'ai', $run['model_name']);
-        $this->syncExistingTasksFromBreakdown($requirementId, $normalized);
         return $breakdown;
     }
 
@@ -147,6 +167,21 @@ class BreakdownService
                 throw new \RuntimeException('存在未匹配到已配置项目的条目,请先编辑修正: ' . (isset($item['project_name']) ? $item['project_name'] : '未知'));
             }
         }
+        $this->assertValidBreakdown((string) $breakdown['content'], $items);
+
+        $progressed = Db::name('ai_dev_tasks')
+            ->where('requirement_id', (int) $requirementId)
+            ->where('status', '<>', 'terminated')
+            ->whereNotIn('status', ['created', 'branch_generated'])
+            ->select()->toArray();
+        if ($progressed) {
+            $ids = array_map(function ($task) {
+                return '#' . (int) $task['id'] . '(' . $task['status'] . ')';
+            }, $progressed);
+            throw new \RuntimeException(
+                '已有工单进入计划或编码阶段，不能再确认新的拆解版本，以免下游上下文漂移: ' . implode('、', $ids)
+            );
+        }
         $requirement = Db::name('ai_dev_requirements')->where('id', $requirementId)->find();
         $doc = (new RequirementService())->latestDoc($requirementId);
         if (!$doc) {
@@ -174,8 +209,12 @@ class BreakdownService
                         'scope_summary' => isset($item['scope_summary']) ? $item['scope_summary'] : '',
                         'updated_at' => date('Y-m-d H:i:s'),
                     ];
-                    if (isset($item['spec_markdown']) && trim((string) $item['spec_markdown']) !== '') {
-                        $taskUpdate['spec_markdown'] = trim((string) $item['spec_markdown']);
+                    $itemSpec = isset($item['spec_markdown']) ? trim((string) $item['spec_markdown']) : '';
+                    if ($itemSpec !== '') {
+                        $taskUpdate['spec_markdown'] = $itemSpec;
+                    } elseif (count($items) > 1) {
+                        // 新拆解版本改变了职责/契约，旧子文档不能继续作为下游输入。
+                        $taskUpdate['spec_markdown'] = '';
                     }
                     if (!empty($requirement['final_branch_name'])) {
                         $taskUpdate['branch_name'] = isset($requirement['branch_name']) ? (string) $requirement['branch_name'] : '';
@@ -186,9 +225,7 @@ class BreakdownService
                     }
                     Db::name('ai_dev_tasks')->where('id', $exists['id'])->update($taskUpdate);
                     $created[] = ['task_id' => $exists['id'], 'project_id' => (int) $item['project_id'], 'skipped' => true];
-                    $existingSpec = isset($exists['spec_markdown']) ? trim((string) $exists['spec_markdown']) : '';
-                    $itemSpec = isset($item['spec_markdown']) ? trim((string) $item['spec_markdown']) : '';
-                    if (count($items) > 1 && $existingSpec === '' && $itemSpec === '') {
+                    if (count($items) > 1 && $itemSpec === '') {
                         $specTaskIds[] = (int) $exists['id'];
                     }
                     continue;
@@ -234,6 +271,96 @@ class BreakdownService
         return $created;
     }
 
+    private function assertValidBreakdown($markdown, array $items, array $expectedProjectIds = [])
+    {
+        if (mb_strlen(trim((string) $markdown)) < 300) {
+            throw new \RuntimeException('需求拆解内容过短，尚不足以支持项目分工');
+        }
+        foreach (['需求理解', '涉及项目与分工', '跨项目接口契约', '风险点'] as $section) {
+            if (!preg_match('/^##\s*' . preg_quote($section, '/') . '\s*$/m', (string) $markdown)) {
+                throw new \RuntimeException('需求拆解缺少必需章节: ## ' . $section);
+            }
+        }
+        if (!$items) {
+            throw new \RuntimeException('需求拆解没有项目条目');
+        }
+
+        $seen = [];
+        $actualIds = [];
+        $dependencyGraph = [];
+        foreach ($items as $item) {
+            $projectId = (int) (isset($item['project_id']) ? $item['project_id'] : 0);
+            $projectName = trim((string) (isset($item['project_name']) ? $item['project_name'] : ''));
+            if ($projectId <= 0 || $projectName === '' || !empty($item['unmatched'])) {
+                throw new \RuntimeException('拆解项目未匹配到已配置项目: ' . ($projectName !== '' ? $projectName : '未知'));
+            }
+            if (isset($seen[$projectId])) {
+                throw new \RuntimeException('拆解中项目重复: ' . $projectName);
+            }
+            $seen[$projectId] = true;
+            $actualIds[] = $projectId;
+            $role = trim((string) (isset($item['role']) ? $item['role'] : ''));
+            if (!in_array($role, ['前端', '后端', '其他'], true)) {
+                throw new \RuntimeException('项目角色必须是前端、后端或其他: ' . $projectName);
+            }
+            if (mb_strlen(trim((string) (isset($item['scope_summary']) ? $item['scope_summary'] : ''))) < 20) {
+                throw new \RuntimeException('项目职责说明过短: ' . $projectName);
+            }
+            $stage = trim((string) (isset($item['dependency_stage']) ? $item['dependency_stage'] : 'none'));
+            if (!in_array($stage, ['before_coding', 'none'], true)) {
+                throw new \RuntimeException('项目依赖阶段不合法: ' . $projectName);
+            }
+            $dependencyNames = isset($item['depends_on_projects']) && is_array($item['depends_on_projects'])
+                ? array_values(array_filter(array_map('strval', $item['depends_on_projects'])))
+                : [];
+            $dependencyIds = isset($item['depends_on_project_ids']) && is_array($item['depends_on_project_ids'])
+                ? array_values(array_filter(array_map('intval', $item['depends_on_project_ids'])))
+                : [];
+            if (count($dependencyNames) !== count($dependencyIds)) {
+                throw new \RuntimeException('项目依赖未匹配到已配置项目: ' . $projectName);
+            }
+            if ($dependencyIds && $stage !== 'before_coding') {
+                throw new \RuntimeException('存在依赖的项目必须使用 before_coding: ' . $projectName);
+            }
+            $dependencyGraph[$projectId] = array_values(array_unique($dependencyIds));
+        }
+        foreach ($dependencyGraph as $projectId => $dependencyIds) {
+            foreach ($dependencyIds as $dependencyId) {
+                if (!isset($seen[$dependencyId])) {
+                    throw new \RuntimeException('项目依赖未包含在本次拆解范围内: project#' . $projectId . ' -> project#' . $dependencyId);
+                }
+            }
+        }
+        $visiting = [];
+        $visited = [];
+        $visit = function ($projectId) use (&$visit, &$visiting, &$visited, $dependencyGraph) {
+            if (isset($visited[$projectId])) {
+                return;
+            }
+            if (isset($visiting[$projectId])) {
+                throw new \RuntimeException('项目依赖存在循环，所有相关工单都会互相阻塞: project#' . $projectId);
+            }
+            $visiting[$projectId] = true;
+            foreach (isset($dependencyGraph[$projectId]) ? $dependencyGraph[$projectId] : [] as $dependencyId) {
+                $visit($dependencyId);
+            }
+            unset($visiting[$projectId]);
+            $visited[$projectId] = true;
+        };
+        foreach (array_keys($dependencyGraph) as $projectId) {
+            $visit($projectId);
+        }
+
+        if ($expectedProjectIds) {
+            $expectedProjectIds = array_values(array_unique(array_filter(array_map('intval', $expectedProjectIds))));
+            sort($expectedProjectIds);
+            sort($actualIds);
+            if ($actualIds !== $expectedProjectIds) {
+                throw new \RuntimeException('AI 拆解结果与人工选择的项目范围不一致，请重试');
+            }
+        }
+    }
+
     private function saveVersion($requirementId, $content, array $items, $source, $modelName)
     {
         $version = (int) Db::name('ai_dev_breakdowns')->where('requirement_id', $requirementId)->max('version') + 1;
@@ -252,41 +379,6 @@ class BreakdownService
             'updated_at' => date('Y-m-d H:i:s'),
         ]);
         return Db::name('ai_dev_breakdowns')->where('id', $id)->find();
-    }
-
-    /**
-     * 重新拆解已有需求时,拆解完成即把职责和可用的每项目需求文档同步到工单。
-     * 确认拆解仍负责创建缺失工单和锁定版本。
-     */
-    private function syncExistingTasksFromBreakdown($requirementId, array $items)
-    {
-        $doc = (new RequirementService())->latestDoc($requirementId);
-        if (!$doc) {
-            return;
-        }
-        foreach ($items as $item) {
-            $projectId = isset($item['project_id']) ? (int) $item['project_id'] : 0;
-            if ($projectId <= 0) {
-                continue;
-            }
-            $task = Db::name('ai_dev_tasks')
-                ->where('requirement_id', (int) $requirementId)
-                ->where('project_id', $projectId)
-                ->where('status', '<>', 'terminated')
-                ->find();
-            if (!$task) {
-                continue;
-            }
-            $update = [
-                'doc_version_id' => (int) $doc['id'],
-                'scope_summary' => isset($item['scope_summary']) ? (string) $item['scope_summary'] : '',
-                'updated_at' => date('Y-m-d H:i:s'),
-            ];
-            if (isset($item['spec_markdown']) && trim((string) $item['spec_markdown']) !== '') {
-                $update['spec_markdown'] = trim((string) $item['spec_markdown']);
-            }
-            Db::name('ai_dev_tasks')->where('id', (int) $task['id'])->update($update);
-        }
     }
 
     private function normalizeDependencyNames(array $item, $projectName, $role, array $backendNames)
@@ -334,13 +426,14 @@ class BreakdownService
                 . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"role\":\"前端|后端|其他\",\"scope_summary\":\"...\",\"interfaces\":\"...\",\"depends_on_projects\":[\"...\"],\"dependency_stage\":\"before_coding|none\",\"dependency_reason\":\"...\"}]}\n"
                 . "所有 Markdown 字段必须是合法 JSON 字符串,换行使用 \\n 转义,不要输出 JSON 代码块或 JSON 外的文字。\n"
                 . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口契约 / ## 风险点。\n"
-                . "其中 ## 跨项目接口契约 必须独立且完整:写清接口路径、入参出参、字段口径、用户标识来源、谁读谁写;它是后续各项目子文档共享的唯一事实源。\n"
+                . "其中 ## 跨项目接口契约 是需求阶段的候选契约:写清接口路径、入参出参、字段口径、用户标识来源、谁读谁写;后续必须由提供方结合代码核验并确认。\n"
                 . "## 跨项目接口契约 必须逐接口展开,每个接口至少包含:方法、路径、用途、调用方、提供方、鉴权要求、请求参数表(参数名/位置/类型/必填/默认值/说明)、响应字段表(字段路径/类型/可空/说明/来源口径)、空数据与失败状态。禁止只写接口名称或一句话摘要。\n"
+                . "需求原文未明确且无法从当前输入确认的路径、字段和规则必须标注『待提供方代码核验』,禁止把猜测写成已确认事实;风险点要逐项列出歧义、缺失信息和确认责任人。\n"
                 . "判定分工时,必须依据每个项目下方的 description(项目简介)界定该项目在本需求中的职责边界,只把属于它的部分划给它,不要展开任何一个项目的代码级实现细节。\n"
                 . "role 依据项目简介判定:以页面/H5/PC 展示为主填『前端』,以接口/代理/数据/日志为主填『后端』,无法归类填『其他』。\n"
                 . "必须显式输出项目依赖关系:前端项目若需要调用后端接口,depends_on_projects 必须填提供接口的后端 project_name,dependency_stage 填 before_coding,dependency_reason 写清依赖的接口/数据契约;后端接口提供方通常不依赖前端,填空数组和 none。依赖项目名必须从项目列表原样取。\n"
                 . "projects 必须为下方**每一个**项目各输出一条,不得新增或遗漏;project_name 必须从列表原样取;"
-                . "scope_summary 用 1 段话说明该项目在本需求中要做什么;interfaces 只写该项目提供或消费的接口摘要,没有则留空。\n"
+                . "scope_summary 必须同时写清交付范围、不负责范围和可验证完成条件;interfaces 只写该项目提供或消费的接口摘要,没有则留空。\n"
                 . "本阶段只做分工和共享契约,不要输出每项目完整需求子文档,不要写 spec_markdown;确认拆解后系统会按项目逐一生成子文档。\n\n"
                 . "# 本需求涉及的项目(人工确认)\n";
         } else {
@@ -348,12 +441,13 @@ class BreakdownService
                 . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"role\":\"前端|后端|其他\",\"scope_summary\":\"...\",\"interfaces\":\"...\",\"depends_on_projects\":[\"...\"],\"dependency_stage\":\"before_coding|none\",\"dependency_reason\":\"...\"}]}\n"
                 . "所有 Markdown 字段必须是合法 JSON 字符串,换行使用 \\n 转义,不要输出 JSON 代码块或 JSON 外的文字。\n"
                 . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口契约 / ## 风险点。\n"
-                . "其中 ## 跨项目接口契约 必须独立且完整:写清接口路径、入参出参、字段口径、用户标识来源、谁读谁写;它是后续各项目子文档共享的唯一事实源。\n"
+                . "其中 ## 跨项目接口契约 是需求阶段的候选契约:写清接口路径、入参出参、字段口径、用户标识来源、谁读谁写;后续必须由提供方结合代码核验并确认。\n"
                 . "## 跨项目接口契约 必须逐接口展开,每个接口至少包含:方法、路径、用途、调用方、提供方、鉴权要求、请求参数表(参数名/位置/类型/必填/默认值/说明)、响应字段表(字段路径/类型/可空/说明/来源口径)、空数据与失败状态。禁止只写接口名称或一句话摘要。\n"
+                . "需求原文未明确且无法从当前输入确认的路径、字段和规则必须标注『待提供方代码核验』,禁止把猜测写成已确认事实;风险点要逐项列出歧义、缺失信息和确认责任人。\n"
                 . "判定分工时,必须依据每个项目下方的 description(项目简介)界定该项目在本需求中的职责边界,只把属于它的部分划给它,不要展开任何一个项目的代码级实现细节。\n"
                 . "role 依据项目简介判定:以页面/H5/PC 展示为主填『前端』,以接口/代理/数据/日志为主填『后端』,无法归类填『其他』。\n"
                 . "必须显式输出项目依赖关系:前端项目若需要调用后端接口,depends_on_projects 必须填提供接口的后端 project_name,dependency_stage 填 before_coding,dependency_reason 写清依赖的接口/数据契约;后端接口提供方通常不依赖前端,填空数组和 none。依赖项目名必须从项目列表原样取。\n"
-                . "projects 只列确实需要改动的项目;project_name 必须从候选列表原样取;scope_summary 用 1 段话说明该项目要做什么;interfaces 只写该项目提供或消费的接口摘要,没有则留空。\n"
+                . "projects 只列确实需要改动的项目;project_name 必须从候选列表原样取;scope_summary 必须同时写清交付范围、不负责范围和可验证完成条件;interfaces 只写该项目提供或消费的接口摘要,没有则留空。\n"
                 . "本阶段只做分工和共享契约,不要输出每项目完整需求子文档,不要写 spec_markdown;确认拆解后系统会按项目逐一生成子文档。\n\n"
                 . "# 候选项目\n";
         }

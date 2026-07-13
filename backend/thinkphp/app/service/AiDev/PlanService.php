@@ -12,6 +12,12 @@ class PlanService
         if (!$task) {
             throw new \RuntimeException('工单不存在');
         }
+        if (!in_array($task['status'], ['branch_generated', 'plan_generated'], true)) {
+            throw new \RuntimeException('只有已生成需求分支、且尚未进入编码的工单才能生成开发计划');
+        }
+        if (trim((string) $task['final_branch_name']) === '') {
+            throw new \RuntimeException('请先在需求页生成并确认分支名');
+        }
         $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
         if (!$project || $project['local_path'] === '' || !is_dir($project['local_path'])) {
             throw new \RuntimeException('项目本地目录不存在,无法读取代码生成计划');
@@ -25,9 +31,16 @@ class PlanService
         $role = $this->resolveProjectRole($task);
         $taskService = new TaskService();
         $this->assertReadyForPlan($task, $role, $taskService);
+        $confirmedBreakdown = Db::name('ai_dev_breakdowns')
+            ->where('requirement_id', (int) $task['requirement_id'])
+            ->whereNotNull('confirmed_at')->order('version', 'desc')->find();
         return (new RunService())->enqueueGeneration((int) $taskId, 'task_plan', [
             'operation' => 'task_plan',
             'task_id' => (int) $taskId,
+            'doc_version_id' => (int) $task['doc_version_id'],
+            'breakdown_id' => $confirmedBreakdown ? (int) $confirmedBreakdown['id'] : 0,
+            'spec_hash' => sha1((string) $task['spec_markdown']),
+            'scope_hash' => sha1((string) $task['scope_summary']),
             'prompt' => $this->buildPrompt(
                 $taskService->projectContext($task),
                 $taskService->specLayoutContext($task),
@@ -50,31 +63,43 @@ class PlanService
         $taskId = (int) $run['task_id'];
         $content = isset($data['plan_markdown']) ? trim((string) $data['plan_markdown']) : '';
         if ($content === '') {
-            throw new \RuntimeException('claude 未返回 plan_markdown');
+            throw new \RuntimeException('AI 未返回 plan_markdown');
         }
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
-        if ($task) {
-            $this->assertValidPlanContent($content, $this->resolveProjectRole($task));
+        if (!$task || !in_array($task['status'], ['branch_generated', 'plan_generated'], true)) {
+            throw new \RuntimeException('计划生成期间工单状态已变化，本次结果不再适用，请重新生成');
         }
+        $this->assertValidPlanContent($content, $this->resolveProjectRole($task));
         return $this->saveVersion($taskId, $content, 'ai', $run['model_name']);
     }
 
     private function assertValidPlanContent($content, $role)
     {
-        if (mb_strpos((string) $role, '前端') === false) {
-            return;
-        }
-        if (mb_strlen($content) < 1500) {
+        if (mb_strlen((string) $content) < 1000) {
             throw new \RuntimeException(
-                '前端开发计划过短(' . mb_strlen($content) . ' 字),可能 JSON 被截断或未按前端模板生成,请重试'
+                '开发计划过短(' . mb_strlen($content) . ' 字)，不足以指导可靠编码，请重新生成或补充'
             );
         }
-        foreach (['页面布局与区域规格', 'PC 端布局', 'H5 端布局', '接口消费与字段展示'] as $section) {
+        if (strpos((string) $content, '⚠️ 模型输出超出最大长度被截断') !== false) {
+            throw new \RuntimeException('开发计划内容被截断，不能确认执行');
+        }
+
+        if (mb_strpos((string) $role, '前端') !== false) {
+            $required = ['需求理解', '页面布局与区域规格', 'PC 端布局', 'H5 端布局', '组件与文件映射', '接口消费与字段展示', '实施步骤', '验证计划', '风险点'];
+            $forbidden = ['接口契约', 'SQL 变更'];
+        } elseif (mb_strpos((string) $role, '后端') !== false) {
+            $required = ['需求理解', '涉及模块与文件', '接口契约', '实施步骤', '验证计划', '风险点'];
+            $forbidden = [];
+        } else {
+            $required = ['需求理解', '涉及模块与文件', '实施步骤', '验证计划', '风险点'];
+            $forbidden = [];
+        }
+        foreach ($required as $section) {
             if (!preg_match('/^##\s*' . preg_quote($section, '/') . '\s*$/m', $content)) {
-                throw new \RuntimeException('前端开发计划缺少必需章节: ## ' . $section . ',请重试');
+                throw new \RuntimeException('开发计划缺少必需章节: ## ' . $section . '，请补充后再确认');
             }
         }
-        foreach (['接口契约', 'SQL 变更'] as $section) {
+        foreach ($forbidden as $section) {
             if (preg_match('/^##\s*' . preg_quote($section, '/') . '\s*$/m', $content)) {
                 throw new \RuntimeException(
                     '前端开发计划误用了后端章节(## ' . $section . ')。'
@@ -144,6 +169,13 @@ class PlanService
 
     public function saveHumanVersion($taskId, $content)
     {
+        $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
+        if (!$task || !in_array($task['status'], ['branch_generated', 'plan_generated'], true)) {
+            throw new \RuntimeException('当前阶段不能修改开发计划');
+        }
+        if (trim((string) $content) === '') {
+            throw new \RuntimeException('开发计划不能为空');
+        }
         return $this->saveVersion($taskId, $content, 'human', '');
     }
 
@@ -173,6 +205,14 @@ class PlanService
         if (!$plan) {
             throw new \RuntimeException('没有可确认的开发计划');
         }
+        $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
+        if (!$task) {
+            throw new \RuntimeException('工单不存在');
+        }
+        if ($task['status'] !== 'plan_generated') {
+            throw new \RuntimeException('只有待确认的最新计划才能确认');
+        }
+        $this->assertValidPlanContent((string) $plan['plan_content'], $this->resolveProjectRole($task));
         Db::name('ai_dev_plans')->where('id', $plan['id'])->update([
             'confirmed_by' => 0,
             'confirmed_at' => date('Y-m-d H:i:s'),
@@ -188,6 +228,7 @@ class PlanService
     {
         $breakdown = Db::name('ai_dev_breakdowns')
             ->where('requirement_id', (int) $task['requirement_id'])
+            ->whereNotNull('confirmed_at')
             ->order('version', 'desc')->find();
         if (!$breakdown) {
             return '其他';
@@ -212,7 +253,10 @@ class PlanService
             . "禁止在 JSON 前后输出任何说明、总结或过渡句(例如『我已经收集了足够的信息』『现在生成开发计划』)。\n"
             . "JSON 格式要求:plan_markdown 的值必须是合法 JSON 字符串;换行写成 \\n,双引号写成 \\\",反引号无需转义;"
             . "正文里的中文引号请用「」,不要用英文双引号,否则会破坏 JSON。\n"
-            . "计划必须引用真实存在的文件路径。\n";
+            . "计划必须先读取仓库再落笔,引用真实存在的文件路径、类/函数/路由/组件等符号;拟新增文件必须明确标注『新增』,不能把猜测写成现状。\n"
+            . "每个实施步骤必须写清:对应的需求/验收编号(UI-xx、API-xx、AC-xx,若上游未编号则引用原文标题)、修改或新增的文件、目标符号、具体改动、验收方式。\n"
+            . "先说明现有实现与需求之间的差距,再给修改步骤;不要只复述需求,不要只给文件清单,不要给无法执行的泛化建议。\n"
+            . "需求或代码无法确认的信息必须列入风险点并说明需要谁确认,禁止自行补造接口、字段或业务规则。\n";
 
         if (mb_strpos((string) $role, '前端') !== false) {
             return $common

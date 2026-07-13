@@ -22,10 +22,11 @@ class ReviewService
             throw new \RuntimeException('当前状态不能发起 Review');
         }
         $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
-        $worktree = dirname(rtrim($project['local_path'], '/')) . '/wt-task-' . $task['id'];
+        $worktree = (new WorktreeService())->path($project, $task);
         if (!is_dir($worktree)) {
             throw new \RuntimeException('工作副本不存在，无法执行检查');
         }
+        $change = $this->refreshChangeSnapshot($change, $worktree);
 
         (new CommandSafetyService())->assertProjectChecks($project);
         list($testResult, $failedCommands, $checkedCommands) = $this->runConfiguredChecks($project, $worktree);
@@ -73,10 +74,11 @@ class ReviewService
             throw new \RuntimeException('当前状态不能发起 AI Review');
         }
         $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
-        $worktree = dirname(rtrim($project['local_path'], '/')) . '/wt-task-' . $task['id'];
+        $worktree = (new WorktreeService())->path($project, $task);
         if (!is_dir($worktree)) {
             throw new \RuntimeException('工作副本不存在，无法执行 AI Review');
         }
+        $change = $this->refreshChangeSnapshot($change, $worktree);
         $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->whereNotNull('confirmed_at')->order('version', 'desc')->find();
         if (!$plan) {
             $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->order('version', 'desc')->find();
@@ -85,13 +87,14 @@ class ReviewService
         $run = (new RunService())->enqueueGeneration((int) $taskId, 'ai_review', [
             'operation' => 'ai_review',
             'task_id' => (int) $taskId,
+            'change_id' => (int) $change['id'],
             'change_run_id' => (int) $change['run_id'],
             'prompt' => $this->buildAiReviewPrompt($task, $plan, $change),
             'options' => [
                 'cwd' => $worktree,
                 'timeout' => (int) config('ai_dev.agent.review_timeout', 900),
                 'max_turns' => 16,
-                'allowed_tools' => 'Read,Glob,Grep',
+                'allowed_tools' => 'Read,Glob,Grep,Bash(git diff:*),Bash(git status:*),Bash(git show:*)',
             ],
         ], 'task:' . (int) $taskId, $model, $draft);
         // 草稿不改工单状态,reviewing 推迟到 executeDraft 时再设。
@@ -112,7 +115,29 @@ class ReviewService
                 $result = $this->normalizeAiReviewResult($salvaged);
             }
         }
-        $pass = $result['status'] === 'pass';
+        $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
+        $project = $task ? Db::name('ai_dev_projects')->where('id', (int) $task['project_id'])->find() : null;
+        if (!$task || !$project) {
+            throw new \RuntimeException('AI Review 对应的工单或项目不存在');
+        }
+        $worktree = (new WorktreeService())->path($project, $task);
+        if (!is_dir($worktree)) {
+            throw new \RuntimeException('工作副本不存在，无法完成 Review 检查');
+        }
+        (new CommandSafetyService())->assertProjectChecks($project);
+        list($testResult, $failedCommands, $checkedCommands) = $this->runConfiguredChecks($project, $worktree);
+        if (!$checkedCommands) {
+            $result['blocking_issues'][] = '项目未配置 lint/test/build 检查命令，AI 代码判断不能替代可执行验证';
+        }
+        foreach ($failedCommands as $command) {
+            $result['blocking_issues'][] = '检查命令执行失败: ' . $command;
+        }
+        $result['blocking_issues'] = array_values(array_unique($result['blocking_issues']));
+        if ($result['blocking_issues']) {
+            $result['status'] = 'fail';
+            $result['risk_level'] = 'high';
+        }
+        $pass = $result['status'] === 'pass' && (bool) $checkedCommands && !$failedCommands;
 
         $id = Db::name('ai_dev_reviews')->insertGetId([
             'task_id' => $taskId,
@@ -120,7 +145,7 @@ class ReviewService
             'status' => $result['status'],
             'risk_level' => $result['risk_level'],
             'review_result' => json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
-            'test_result' => 'AI 只读 Review：未执行写操作；允许工具：Read,Glob,Grep。',
+            'test_result' => "AI 只读 Review：已要求基于完整 git diff HEAD 审查，未授权写操作。\n\n" . $testResult,
             'created_at' => date('Y-m-d H:i:s'),
         ]);
         (new TaskService())->updateStatus($taskId, $pass ? 'review_passed' : 'review_failed');
@@ -394,18 +419,46 @@ class ReviewService
         return [implode("\n\n", $parts), $failed, $checked];
     }
 
+    private function refreshChangeSnapshot(array $change, $worktree)
+    {
+        exec('git -C ' . escapeshellarg($worktree) . ' add -A -N');
+        $files = [];
+        $diffLines = [];
+        exec('git -C ' . escapeshellarg($worktree) . ' diff HEAD --name-only', $files, $filesCode);
+        exec('git -C ' . escapeshellarg($worktree) . ' diff HEAD', $diffLines, $diffCode);
+        if ($filesCode !== 0 || $diffCode !== 0) {
+            throw new \RuntimeException('读取 Review 代码快照失败');
+        }
+        if (!$files) {
+            throw new \RuntimeException('当前 worktree 没有可 Review 的代码改动');
+        }
+        $snapshot = implode("\n", $diffLines);
+        Db::name('ai_dev_changes')->where('id', (int) $change['id'])->update([
+            'changed_files' => json_encode($files, JSON_UNESCAPED_UNICODE),
+            'git_diff_snapshot' => $snapshot,
+        ]);
+        $change['changed_files'] = json_encode($files, JSON_UNESCAPED_UNICODE);
+        $change['git_diff_snapshot'] = $snapshot;
+        return $change;
+    }
+
     private function buildAiReviewPrompt(array $task, $plan, array $change)
     {
-        $diff = mb_substr((string) $change['git_diff_snapshot'], 0, 50000);
-        return "你是资深代码审查员。你只能读取文件和搜索代码，禁止修改任何文件，禁止执行命令。\n"
-            . "请对照需求、项目职责、已确认计划和 git diff 做只读 Review，判断改动是否满足计划、是否有明显 bug、越界修改、接口/兼容性/安全风险。\n"
+        $files = json_decode((string) $change['changed_files'], true);
+        $files = is_array($files) ? $files : [];
+        return "你是资深代码审查员。禁止修改任何文件。除 git diff/status/show 这三个只读命令外禁止执行其他命令。\n"
+            . "必须先执行 `git status --short --untracked-files=no` 和 `git diff HEAD` 阅读当前 worktree 相对基准提交的完整实际改动（包括已暂存内容），不能只抽查文件；再读取相关调用方、类型定义和测试代码核对上下文。\n"
+            . "逐条对照需求/验收编号、项目职责和已确认计划，检查遗漏实现、错误业务逻辑、空值与异常分支、接口契约偏差、兼容性、越界修改和测试缺口。\n"
+            . "status=pass 仅表示没有必须修改的问题；任何会导致需求不满足、运行错误、数据错误、接口不兼容或无法验证的事项都必须放入 blocking_issues 并返回 fail。\n"
+            . "blocking_issues 每项必须写成『[文件:行号或符号] 问题 | 影响 | 建议修复』，不得只写笼统结论；无法确认时写明缺少的证据。\n"
             . "只返回 JSON，不要 Markdown，不要解释 JSON 以外的内容。结构固定为：\n"
             . "{\"status\":\"pass|fail\",\"risk_level\":\"low|medium|high\",\"summary\":\"一句话结论\","
             . "\"blocking_issues\":[\"必须修复的问题\"],\"warnings\":[\"风险提示\"],\"suggestions\":[\"非阻塞建议\"]}\n\n"
             . (new TaskService())->projectContext($task) . "\n\n"
             . "# 本项目职责\n" . ($task['scope_summary'] !== '' ? $task['scope_summary'] : '未填写') . "\n\n"
             . "# 已确认计划\n" . ($plan ? $plan['plan_content'] : '未找到计划') . "\n\n"
-            . "# git diff\n" . $diff . "\n";
+            . "# 系统记录的变更文件（仍须以实际 git diff 为准）\n- "
+            . implode("\n- ", $files ?: ['暂无记录']) . "\n";
     }
 
     private function normalizeAiReviewResult(array $raw)

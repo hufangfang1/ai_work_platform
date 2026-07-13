@@ -49,7 +49,7 @@
               <ModelPicker v-model="planModel" step="task_plan" />
               <el-button
                 :loading="planning || planRunning"
-                :disabled="task.status === 'created' || planLocked || planRunning"
+                :disabled="task.status === 'created' || planLocked || planRunning || specRunning"
                 @click="generatePlan"
               >
                 <el-icon><MagicStick /></el-icon>
@@ -57,7 +57,7 @@
               </el-button>
               <el-button
                 plain
-                :disabled="task.status === 'created' || planLocked || planRunning"
+                :disabled="task.status === 'created' || planLocked || planRunning || specRunning"
                 @click="generatePlan(true)"
               >
                 编辑提示语
@@ -65,7 +65,7 @@
               <el-button :disabled="!latestPlan || planLocked" @click="savePlan">保存编辑为新版本</el-button>
               <el-button
                 type="success"
-                :disabled="!latestPlan || task.status !== 'plan_generated'"
+                :disabled="!latestPlan || task.status !== 'plan_generated' || planRunning"
                 @click="confirmPlan"
               >
                 <el-icon><Select /></el-icon>
@@ -216,6 +216,12 @@
               </div>
             </template>
             <div v-else class="muted">AI 执行完成后展示改动</div>
+            <el-alert
+              v-if="!hasConfiguredChecks"
+              type="warning"
+              :closable="false"
+              title="项目尚未配置 lint/test/build 命令；Review 会判定为未通过，请先到项目配置页补充至少一项可执行检查。"
+            />
             <div class="toolbar">
               <el-button
                 type="primary"
@@ -231,7 +237,7 @@
                 :disabled="aiReviewRunning || !['code_changed', 'review_passed', 'review_failed'].includes(task.status)"
                 @click="aiReview"
               >
-                AI 只读 Review
+                AI Review + 自动检查
               </el-button>
               <el-button
                 plain
@@ -484,6 +490,7 @@
                 size="small"
                 plain
                 :loading="specGenerating || specRunning"
+                :disabled="!['created', 'branch_generated', 'plan_generated'].includes(task.status) || specRunning"
                 @click="generateSpec"
               >
                 {{ task.spec_markdown ? '重新生成' : '生成' }}
@@ -637,6 +644,9 @@ const showFixPanel = computed(() => {
   return status === 'review_passed' && hasReviewFixables.value
 })
 const canStartFix = computed(() => Boolean(fixFeedback.value.trim()) || hasReviewFixables.value)
+const hasConfiguredChecks = computed(() =>
+  ['lint_command', 'test_command', 'build_command'].some((field) => task.value?.project?.[field]?.trim()),
+)
 const runningRun = computed(() =>
   task.value?.runs?.find((run) => ['coding', 'fix'].includes(run.run_type) && ['running', 'queued'].includes(run.status)),
 )

@@ -19,6 +19,10 @@ class RunService
         if (!$plan) {
             throw new \RuntimeException('没有已确认的开发计划');
         }
+        $project = Db::name('ai_dev_projects')->where('id', (int) $task['project_id'])->find();
+        if (!$project) {
+            throw new \RuntimeException('项目不存在');
+        }
         $blockingDependencies = (new TaskService())->blockingDependencies($task);
         if ($blockingDependencies) {
             $names = [];
@@ -32,7 +36,7 @@ class RunService
         if ((new ModelProfileService())->isHttp($modelKey)) {
             throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
         }
-        $run = $this->createRun($taskId, 'coding', $this->buildPrompt($task, $plan, ''), '', $modelKey);
+        $run = $this->createRun($taskId, 'coding', $this->buildPrompt($task, $plan, $project, ''), 'plan:' . (int) $plan['id'], $modelKey);
         return $this->dispatchOrDraft($run, 'app\job\AiDevCodeJob', $taskId, 'coding', $draft);
     }
 
@@ -43,11 +47,25 @@ class RunService
             throw new \RuntimeException('只有代码已修改、Review 待确认或未通过的工单才能继续修改');
         }
         $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->whereNotNull('confirmed_at')->order('version', 'desc')->find();
+        if (!$plan) {
+            throw new \RuntimeException('没有已确认的开发计划，不能继续修改');
+        }
+        $project = Db::name('ai_dev_projects')->where('id', (int) $task['project_id'])->find();
+        if (!$project) {
+            throw new \RuntimeException('项目不存在');
+        }
         $modelKey = (new ModelProfileService())->resolveKey('fix', $model);
         if ((new ModelProfileService())->isHttp($modelKey)) {
             throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
         }
-        $run = $this->createRun($taskId, 'fix', $this->buildPrompt($task, $plan, (new ReviewService())->effectiveReviewFeedbackForFix($taskId, $feedback)), '', $modelKey);
+        $latestChange = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('id', 'desc')->find();
+        $run = $this->createRun(
+            $taskId,
+            'fix',
+            $this->buildPrompt($task, $plan, $project, (new ReviewService())->effectiveReviewFeedbackForFix($taskId, $feedback)),
+            $latestChange ? 'change:' . (int) $latestChange['id'] : '',
+            $modelKey
+        );
         return $this->dispatchOrDraft($run, 'app\job\AiDevCodeJob', $taskId, 'fixing', $draft);
     }
 
@@ -122,6 +140,7 @@ class RunService
         } else {
             throw new \RuntimeException('该执行类型暂不支持: ' . $runType);
         }
+        $this->assertDraftStillApplicable($run);
         Db::name('ai_dev_runs')->where('id', $runId)->update(['status' => 'queued']);
         Queue::push($job, ['run_id' => $runId], 'ai_dev_code');
         $taskId = (int) $run['task_id'];
@@ -132,6 +151,77 @@ class RunService
             }
         }
         return $this->detail($runId);
+    }
+
+    private function assertDraftStillApplicable(array $run)
+    {
+        $runType = (string) $run['run_type'];
+        $payload = json_decode((string) $run['input'], true);
+
+        if ($runType === 'requirement_breakdown' && is_array($payload)) {
+            $latestDoc = (new RequirementService())->latestDoc((int) (isset($payload['requirement_id']) ? $payload['requirement_id'] : 0));
+            if (!$latestDoc || (int) $latestDoc['id'] !== (int) (isset($payload['doc_version_id']) ? $payload['doc_version_id'] : 0)) {
+                throw new \RuntimeException('需求文档已更新，当前拆解草稿上下文已过期，请重新生成草稿');
+            }
+            return;
+        }
+
+        $taskId = (int) $run['task_id'];
+        if ($taskId <= 0) {
+            return;
+        }
+        $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
+        if (!$task) {
+            throw new \RuntimeException('工单不存在');
+        }
+
+        if ($runType === 'coding') {
+            if (!in_array($task['status'], ['plan_confirmed', 'failed'], true)) {
+                throw new \RuntimeException('工单状态已变化，编码草稿不能再执行');
+            }
+            $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->whereNotNull('confirmed_at')->order('version', 'desc')->find();
+            if (!$plan || $run['agent_session_id'] !== 'plan:' . (int) $plan['id']) {
+                throw new \RuntimeException('已确认计划已变化，编码草稿上下文已过期');
+            }
+            if ((new TaskService())->blockingDependencies($task)) {
+                throw new \RuntimeException('上游依赖尚未满足，编码草稿不能执行');
+            }
+            return;
+        }
+        if ($runType === 'fix') {
+            if (!in_array($task['status'], ['review_failed', 'code_changed', 'review_passed'], true)) {
+                throw new \RuntimeException('工单状态已变化，Fix 草稿不能再执行');
+            }
+            $change = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('id', 'desc')->find();
+            if (!$change || $run['agent_session_id'] !== 'change:' . (int) $change['id']) {
+                throw new \RuntimeException('代码或 Review 轮次已变化，Fix 草稿上下文已过期');
+            }
+            return;
+        }
+        if ($runType === 'task_plan' && is_array($payload)) {
+            if (!in_array($task['status'], ['branch_generated', 'plan_generated'], true)) {
+                throw new \RuntimeException('工单已进入后续阶段，计划草稿不能再执行');
+            }
+            $breakdown = Db::name('ai_dev_breakdowns')->where('requirement_id', (int) $task['requirement_id'])
+                ->whereNotNull('confirmed_at')->order('version', 'desc')->find();
+            $matches = (int) $task['doc_version_id'] === (int) (isset($payload['doc_version_id']) ? $payload['doc_version_id'] : 0)
+                && sha1((string) $task['spec_markdown']) === (string) (isset($payload['spec_hash']) ? $payload['spec_hash'] : '')
+                && sha1((string) $task['scope_summary']) === (string) (isset($payload['scope_hash']) ? $payload['scope_hash'] : '')
+                && ($breakdown ? (int) $breakdown['id'] : 0) === (int) (isset($payload['breakdown_id']) ? $payload['breakdown_id'] : 0);
+            if (!$matches) {
+                throw new \RuntimeException('需求规格或拆解已变化，计划草稿上下文已过期，请重新生成');
+            }
+            return;
+        }
+        if ($runType === 'ai_review' && is_array($payload)) {
+            if (!in_array($task['status'], ['code_changed', 'review_passed', 'review_failed'], true)) {
+                throw new \RuntimeException('工单状态已变化，Review 草稿不能再执行');
+            }
+            $change = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('id', 'desc')->find();
+            if (!$change || (int) $change['id'] !== (int) (isset($payload['change_id']) ? $payload['change_id'] : 0)) {
+                throw new \RuntimeException('代码变更已更新，Review 草稿上下文已过期');
+            }
+        }
     }
 
     /**
@@ -379,70 +469,78 @@ class RunService
         return is_array($data) ? $data : null;
     }
 
-    private function buildPrompt(array $task, array $plan, $feedback)
+    private function buildPrompt(array $task, array $plan, array $project, $feedback)
     {
         if (trim((string) $feedback) !== '') {
-            return $this->buildFixPrompt($task, $feedback);
+            return $this->buildFixPrompt($task, $plan, $project, $feedback);
         }
-        return $this->buildCodingPrompt($task, $plan);
+        return $this->buildCodingPrompt($task, $plan, $project);
     }
 
-    private function buildCodingPrompt(array $task, array $plan)
+    private function buildCodingPrompt(array $task, array $plan, array $project)
     {
-        $prompt = "# 任务\n按以下已确认的开发计划修改代码，不要偏离计划范围。\n\n";
+        $prompt = "# 任务\n严格按以下已确认开发计划完成代码修改，并用可复现检查验证结果。\n\n";
         $prompt .= (new TaskService())->projectContext($task) . "\n\n";
         if (!empty($task['scope_summary'])) {
             $prompt .= "# 本项目职责（来自需求拆解）\n" . $task['scope_summary'] . "\n\n";
         }
         $prompt .= "# 已确认的开发计划\n" . $plan['plan_content'] . "\n\n";
+        $prompt .= "# 执行要求\n"
+            . "1. 修改前先读取计划涉及的真实文件和相邻实现，确认现有架构、调用链和约定；计划与代码冲突时以代码事实为准，并在最终 unresolved_risks 说明，不要静默改需求。\n"
+            . "2. 逐条落实计划中的需求/验收编号；只改本项目职责和计划覆盖的文件，不顺手重构无关代码，不新增需求未要求的功能。\n"
+            . "3. 优先复用已有服务、组件、类型、错误处理和测试模式；新增接口或字段必须与已确认契约一致。\n"
+            . "4. 为新增/修改行为补充必要测试；完成后运行下方已配置检查。检查失败时继续定位修复，无法修复则如实写入 unresolved_risks。\n"
+            . "5. 禁止执行 git commit、git push，不要修改需求和计划文档。\n\n"
+            . $this->projectChecksPrompt($project) . "\n";
         $prompt .= $this->codingOutputConstraints();
         return $prompt;
     }
 
-    /** fix 轮次用精简模板:不重复需求文档与开发计划,聚焦 Review 修复。 */
-    private function buildFixPrompt(array $task, $feedback)
+    private function buildFixPrompt(array $task, array $plan, array $project, $feedback)
     {
-        $project = Db::name('ai_dev_projects')->where('id', (int) $task['project_id'])->find();
-        $worktree = $project ? (new WorktreeService())->path($project, $task) : '';
-
-        $prompt = "# 任务\n"
-            . "修复 Review 反馈中的 blocking 问题，使现有代码可运行。"
-            . "不要偏离已确认开发计划的功能范围，本轮重点是修复对接错误，不是重新实现。\n\n";
-
-        $prompt .= "# Fix 范围\n";
-        if ($worktree !== '') {
-            $prompt .= "在 worktree `{$worktree}` 修改代码";
-            if ($project && !empty($project['name'])) {
-                $prompt .= "（项目：{$project['name']}，工单 #{$task['id']}）";
-            }
-            $prompt .= "。\n\n";
-        }
-
-        $prompt .= "# 修复原则\n"
-            . "1. 【优先】修复 blocking 问题；以现有 services 层实现为准，主要适配 routes 层调用\n"
-            . "2. 不要重写已正确的 SQL 聚合逻辑\n"
-            . "3. 不要改与 Review 反馈无关的文件\n"
-            . "4. warning 级别问题有余力再处理\n\n";
-
-        if (!empty($task['scope_summary'])) {
-            $prompt .= "# 本项目职责（摘要）\n" . trim((string) $task['scope_summary']) . "\n\n";
-        }
-
-        $prompt .= "# 约束\n"
-            . "- 只修改 Review 反馈涉及的模块和文件\n"
-            . "- 不要执行 git commit / git push\n"
-            . "- 不要修改与本需求无关的文件\n"
-            . $this->codingOutputConstraints()
-            . "\n\n# Review 反馈\n" . trim((string) $feedback) . "\n";
+        $change = Db::name('ai_dev_changes')->where('task_id', (int) $task['id'])->order('id', 'desc')->find();
+        $changedFiles = $change ? json_decode((string) $change['changed_files'], true) : [];
+        $prompt = "# 任务\n修复下方 Review 的 blocking 问题，保持已正确行为不回退，并重新执行验证。\n\n"
+            . (new TaskService())->projectContext($task) . "\n\n"
+            . "# 本项目职责\n" . trim((string) $task['scope_summary']) . "\n\n"
+            . "# 已确认开发计划（修复不得越界）\n" . $plan['plan_content'] . "\n\n"
+            . "# 当前变更文件\n- " . implode("\n- ", is_array($changedFiles) && $changedFiles ? $changedFiles : ['暂无记录，请从反馈定位']) . "\n\n"
+            . "# 修复规则\n"
+            . "1. 逐条处理 blocking_issues；先读取问题位置及调用上下文，确认根因后再改，不要只压制报错或硬编码绕过。\n"
+            . "2. warnings 仅在不扩大改动范围时处理；suggestions 默认非阻塞，不得借此重构无关模块。\n"
+            . "3. 检查修复是否影响同一调用链、接口契约、空值/异常分支和已有测试。\n"
+            . "4. 为回归问题补测试，并运行项目检查；禁止 git commit、git push。\n\n"
+            . $this->projectChecksPrompt($project) . "\n"
+            . "# Review 反馈\n" . trim((string) $feedback) . "\n\n"
+            . $this->codingOutputConstraints();
 
         return $prompt;
+    }
+
+    private function projectChecksPrompt(array $project)
+    {
+        $lines = ["# 项目检查命令"];
+        $configured = false;
+        foreach (['lint_command' => 'Lint', 'test_command' => 'Test', 'build_command' => 'Build'] as $field => $label) {
+            $command = trim((string) (isset($project[$field]) ? $project[$field] : ''));
+            if ($command === '') {
+                continue;
+            }
+            $configured = true;
+            $lines[] = "- {$label}: `{$command}`";
+        }
+        if (!$configured) {
+            $lines[] = '- 未配置。请至少做静态代码核对，并在 unresolved_risks 明确说明无法自动验证。';
+        }
+        return implode("\n", $lines) . "\n";
     }
 
     private function codingOutputConstraints()
     {
         return "- 完成后只输出 JSON,不要 Markdown,不要代码块,结构固定为:"
             . "{\"summary_subject\":\"一句话说明这次代码改了什么\",\"change_summary\":[\"改动点\"],"
-            . "\"changed_files\":[\"文件路径\"],\"verification_steps\":[\"建议验证步骤\"]}\n";
+            . "\"changed_files\":[\"文件路径\"],\"completed_requirements\":[\"已完成的需求/验收编号\"],"
+            . "\"verification_results\":[\"实际执行的命令及结果\"],\"unresolved_risks\":[\"未解决问题；没有则为空数组\"]}\n";
     }
 
     private function restoreStatusAfterCancel(array $run)

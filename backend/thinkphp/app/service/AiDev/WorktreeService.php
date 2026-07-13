@@ -6,7 +6,12 @@ class WorktreeService
 {
     public function path(array $project, array $task)
     {
-        return dirname(rtrim($project['local_path'], '/')) . '/wt-task-' . $task['id'];
+        $prefix = (string) config('ai_dev.worktree.prefix', 'wt-task-');
+        $prefix = preg_replace('/[^A-Za-z0-9._-]+/', '-', $prefix);
+        if ($prefix === '') {
+            $prefix = 'wt-task-';
+        }
+        return dirname(rtrim($project['local_path'], '/')) . '/' . $prefix . $task['id'];
     }
 
     public function remove(array $project, array $task, $force = false)
