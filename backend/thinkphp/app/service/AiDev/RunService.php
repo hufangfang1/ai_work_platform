@@ -26,7 +26,7 @@ class RunService
                 $names[] = ($dependency['project_name'] !== '' ? $dependency['project_name'] : ('project#' . $dependency['project_id']))
                     . '(' . $dependency['status'] . ')';
             }
-            throw new \RuntimeException('依赖工单未完成,暂不能开始 AI 修改: ' . implode('、', $names));
+            throw new \RuntimeException('依赖工单 AI Review 未通过,暂不能开始 AI 修改: ' . implode('、', $names));
         }
         $modelKey = (new ModelProfileService())->resolveKey('coding', $model);
         if ((new ModelProfileService())->isHttp($modelKey)) {
@@ -39,15 +39,15 @@ class RunService
     public function enqueueFix($taskId, $feedback, $model = '', $draft = false)
     {
         $task = Db::name('ai_dev_tasks')->where('id', $taskId)->find();
-        if (!$task || !in_array($task['status'], ['review_failed', 'code_changed'])) {
-            throw new \RuntimeException('只有代码已修改或 Review 未通过的工单才能继续修改');
+        if (!$task || !in_array($task['status'], ['review_failed', 'code_changed', 'review_passed'], true)) {
+            throw new \RuntimeException('只有代码已修改、Review 待确认或未通过的工单才能继续修改');
         }
         $plan = Db::name('ai_dev_plans')->where('task_id', $taskId)->whereNotNull('confirmed_at')->order('version', 'desc')->find();
         $modelKey = (new ModelProfileService())->resolveKey('fix', $model);
         if ((new ModelProfileService())->isHttp($modelKey)) {
             throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
         }
-        $run = $this->createRun($taskId, 'fix', $this->buildPrompt($task, $plan, $feedback), '', $modelKey);
+        $run = $this->createRun($taskId, 'fix', $this->buildPrompt($task, $plan, (new ReviewService())->effectiveReviewFeedbackForFix($taskId, $feedback)), '', $modelKey);
         return $this->dispatchOrDraft($run, 'app\job\AiDevCodeJob', $taskId, 'fixing', $draft);
     }
 
@@ -288,10 +288,22 @@ class RunService
         if ($run['run_type'] === 'commit_message' && $this->recoverCommitMessageRun($run)) {
             return $this->detail($runId);
         }
+        $input = (string) $run['input'];
+        if ($run['run_type'] === 'ai_review') {
+            $decoded = json_decode($input, true);
+            if (is_array($decoded)) {
+                if (!isset($decoded['options']) || !is_array($decoded['options'])) {
+                    $decoded['options'] = [];
+                }
+                $decoded['options']['timeout'] = (int) config('ai_dev.agent.review_timeout', 900);
+                $decoded['options']['max_turns'] = 16;
+                $input = json_encode($decoded, JSON_UNESCAPED_UNICODE);
+            }
+        }
         $newRun = $this->createRun(
             (int) $run['task_id'],
             $run['run_type'],
-            $run['input'],
+            $input,
             $run['agent_session_id'],
             $modelName
         );
@@ -369,20 +381,68 @@ class RunService
 
     private function buildPrompt(array $task, array $plan, $feedback)
     {
+        if (trim((string) $feedback) !== '') {
+            return $this->buildFixPrompt($task, $feedback);
+        }
+        return $this->buildCodingPrompt($task, $plan);
+    }
+
+    private function buildCodingPrompt(array $task, array $plan)
+    {
         $prompt = "# 任务\n按以下已确认的开发计划修改代码，不要偏离计划范围。\n\n";
         $prompt .= (new TaskService())->projectContext($task) . "\n\n";
         if (!empty($task['scope_summary'])) {
             $prompt .= "# 本项目职责（来自需求拆解）\n" . $task['scope_summary'] . "\n\n";
         }
         $prompt .= "# 已确认的开发计划\n" . $plan['plan_content'] . "\n\n";
-        $prompt .= "# 约束\n- 只修改计划中涉及的模块和文件\n- 不要执行 git commit / git push\n- 不要修改与本需求无关的文件\n"
-            . "- 完成后只输出 JSON,不要 Markdown,不要代码块,结构固定为:"
+        $prompt .= $this->codingOutputConstraints();
+        return $prompt;
+    }
+
+    /** fix 轮次用精简模板:不重复需求文档与开发计划,聚焦 Review 修复。 */
+    private function buildFixPrompt(array $task, $feedback)
+    {
+        $project = Db::name('ai_dev_projects')->where('id', (int) $task['project_id'])->find();
+        $worktree = $project ? (new WorktreeService())->path($project, $task) : '';
+
+        $prompt = "# 任务\n"
+            . "修复 Review 反馈中的 blocking 问题，使现有代码可运行。"
+            . "不要偏离已确认开发计划的功能范围，本轮重点是修复对接错误，不是重新实现。\n\n";
+
+        $prompt .= "# Fix 范围\n";
+        if ($worktree !== '') {
+            $prompt .= "在 worktree `{$worktree}` 修改代码";
+            if ($project && !empty($project['name'])) {
+                $prompt .= "（项目：{$project['name']}，工单 #{$task['id']}）";
+            }
+            $prompt .= "。\n\n";
+        }
+
+        $prompt .= "# 修复原则\n"
+            . "1. 【优先】修复 blocking 问题；以现有 services 层实现为准，主要适配 routes 层调用\n"
+            . "2. 不要重写已正确的 SQL 聚合逻辑\n"
+            . "3. 不要改与 Review 反馈无关的文件\n"
+            . "4. warning 级别问题有余力再处理\n\n";
+
+        if (!empty($task['scope_summary'])) {
+            $prompt .= "# 本项目职责（摘要）\n" . trim((string) $task['scope_summary']) . "\n\n";
+        }
+
+        $prompt .= "# 约束\n"
+            . "- 只修改 Review 反馈涉及的模块和文件\n"
+            . "- 不要执行 git commit / git push\n"
+            . "- 不要修改与本需求无关的文件\n"
+            . $this->codingOutputConstraints()
+            . "\n\n# Review 反馈\n" . trim((string) $feedback) . "\n";
+
+        return $prompt;
+    }
+
+    private function codingOutputConstraints()
+    {
+        return "- 完成后只输出 JSON,不要 Markdown,不要代码块,结构固定为:"
             . "{\"summary_subject\":\"一句话说明这次代码改了什么\",\"change_summary\":[\"改动点\"],"
             . "\"changed_files\":[\"文件路径\"],\"verification_steps\":[\"建议验证步骤\"]}\n";
-        if ($feedback !== '') {
-            $prompt .= "\n# Review 反馈\n" . $feedback . "\n";
-        }
-        return $prompt;
     }
 
     private function restoreStatusAfterCancel(array $run)
@@ -396,6 +456,24 @@ class RunService
             $status = $run['run_type'] === 'fix' ? 'review_failed' : 'plan_confirmed';
         } elseif ($run['run_type'] === 'ai_review') {
             $status = 'code_changed';
+        }
+        if ($status !== '') {
+            (new TaskService())->updateStatus($taskId, $status);
+        }
+    }
+
+    /** coding/fix 执行失败时按 run 类型恢复工单状态,避免 fix 失败误落到步骤 2 的 failed。 */
+    public function restoreStatusAfterCodeRunFailure(array $run)
+    {
+        $taskId = (int) $run['task_id'];
+        if ($taskId <= 0) {
+            return;
+        }
+        $status = '';
+        if ($run['run_type'] === 'fix') {
+            $status = 'review_failed';
+        } elseif ($run['run_type'] === 'coding') {
+            $status = 'failed';
         }
         if ($status !== '') {
             (new TaskService())->updateStatus($taskId, $status);

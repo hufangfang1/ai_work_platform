@@ -26,6 +26,7 @@ Route::group('api/ai-dev', function () {
 
     Route::post('tasks/:id/generate-branch', 'AiDev.TaskController/generateBranch');
     Route::post('tasks/:id/check-branch', 'AiDev.TaskController/checkBranch');
+    Route::post('tasks/:id/generate-spec', 'AiDev.TaskController/generateSpec');
     Route::post('tasks/:id/generate-plan', 'AiDev.TaskController/generatePlan');
     Route::put('tasks/:id/plan', 'AiDev.TaskController/savePlan');
     Route::post('tasks/:id/confirm-plan', 'AiDev.TaskController/confirmPlan');

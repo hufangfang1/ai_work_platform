@@ -79,9 +79,6 @@ class BreakdownService
             $projectName = isset($item['project_name']) ? trim($item['project_name']) : '';
             $role = isset($item['role']) ? trim($item['role']) : '其他';
             $specMarkdown = isset($item['spec_markdown']) ? trim((string) $item['spec_markdown']) : '';
-            if ($specMarkdown === '') {
-                throw new \RuntimeException('拆解结果缺少本项目需求文档: ' . ($projectName !== '' ? $projectName : '未知项目'));
-            }
             $dependencyNames = $this->normalizeDependencyNames($item, $projectName, $role, $backendNames);
             $dependencyIds = [];
             foreach ($dependencyNames as $name) {
@@ -149,9 +146,6 @@ class BreakdownService
             if (empty($item['project_id'])) {
                 throw new \RuntimeException('存在未匹配到已配置项目的条目,请先编辑修正: ' . (isset($item['project_name']) ? $item['project_name'] : '未知'));
             }
-            if (trim((string) (isset($item['spec_markdown']) ? $item['spec_markdown'] : '')) === '') {
-                throw new \RuntimeException('拆解版本缺少本项目需求文档,请重新拆解需求后再确认: ' . (isset($item['project_name']) ? $item['project_name'] : '未知'));
-            }
         }
         $requirement = Db::name('ai_dev_requirements')->where('id', $requirementId)->find();
         $doc = (new RequirementService())->latestDoc($requirementId);
@@ -161,6 +155,7 @@ class BreakdownService
 
         $taskService = new TaskService();
         $created = [];
+        $specTaskIds = [];
         Db::startTrans();
         try {
             Db::name('ai_dev_breakdowns')->where('id', $breakdown['id'])->update([
@@ -177,9 +172,11 @@ class BreakdownService
                     $taskUpdate = [
                         'doc_version_id' => (int) $doc['id'],
                         'scope_summary' => isset($item['scope_summary']) ? $item['scope_summary'] : '',
-                        'spec_markdown' => isset($item['spec_markdown']) ? trim((string) $item['spec_markdown']) : '',
                         'updated_at' => date('Y-m-d H:i:s'),
                     ];
+                    if (isset($item['spec_markdown']) && trim((string) $item['spec_markdown']) !== '') {
+                        $taskUpdate['spec_markdown'] = trim((string) $item['spec_markdown']);
+                    }
                     if (!empty($requirement['final_branch_name'])) {
                         $taskUpdate['branch_name'] = isset($requirement['branch_name']) ? (string) $requirement['branch_name'] : '';
                         $taskUpdate['final_branch_name'] = (string) $requirement['final_branch_name'];
@@ -189,10 +186,18 @@ class BreakdownService
                     }
                     Db::name('ai_dev_tasks')->where('id', $exists['id'])->update($taskUpdate);
                     $created[] = ['task_id' => $exists['id'], 'project_id' => (int) $item['project_id'], 'skipped' => true];
+                    $existingSpec = isset($exists['spec_markdown']) ? trim((string) $exists['spec_markdown']) : '';
+                    $itemSpec = isset($item['spec_markdown']) ? trim((string) $item['spec_markdown']) : '';
+                    if (count($items) > 1 && $existingSpec === '' && $itemSpec === '') {
+                        $specTaskIds[] = (int) $exists['id'];
+                    }
                     continue;
                 }
                 $task = $taskService->createFromBreakdown($requirement, $doc, $item);
                 $created[] = ['task_id' => $task['id'], 'project_id' => (int) $item['project_id'], 'skipped' => false];
+                if (count($items) > 1 && trim((string) (isset($item['spec_markdown']) ? $item['spec_markdown'] : '')) === '') {
+                    $specTaskIds[] = (int) $task['id'];
+                }
             }
             Db::name('ai_dev_requirements')->where('id', $requirementId)->update([
                 'status' => 'active',
@@ -202,6 +207,29 @@ class BreakdownService
         } catch (\Throwable $e) {
             Db::rollback();
             throw $e;
+        }
+        if ($specTaskIds) {
+            $specService = new SpecService();
+            foreach ($specTaskIds as $taskId) {
+                try {
+                    $run = $specService->generate($taskId);
+                    foreach ($created as &$item) {
+                        if ((int) $item['task_id'] === (int) $taskId) {
+                            $item['spec_run_id'] = (int) $run['id'];
+                            break;
+                        }
+                    }
+                    unset($item);
+                } catch (\Throwable $e) {
+                    foreach ($created as &$item) {
+                        if ((int) $item['task_id'] === (int) $taskId) {
+                            $item['spec_error'] = $e->getMessage();
+                            break;
+                        }
+                    }
+                    unset($item);
+                }
+            }
         }
         return $created;
     }
@@ -227,7 +255,7 @@ class BreakdownService
     }
 
     /**
-     * 重新拆解已有需求时,拆解完成即把每项目需求文档同步到下方工单卡片。
+     * 重新拆解已有需求时,拆解完成即把职责和可用的每项目需求文档同步到工单。
      * 确认拆解仍负责创建缺失工单和锁定版本。
      */
     private function syncExistingTasksFromBreakdown($requirementId, array $items)
@@ -249,12 +277,15 @@ class BreakdownService
             if (!$task) {
                 continue;
             }
-            Db::name('ai_dev_tasks')->where('id', (int) $task['id'])->update([
+            $update = [
                 'doc_version_id' => (int) $doc['id'],
                 'scope_summary' => isset($item['scope_summary']) ? (string) $item['scope_summary'] : '',
-                'spec_markdown' => isset($item['spec_markdown']) ? trim((string) $item['spec_markdown']) : '',
                 'updated_at' => date('Y-m-d H:i:s'),
-            ]);
+            ];
+            if (isset($item['spec_markdown']) && trim((string) $item['spec_markdown']) !== '') {
+                $update['spec_markdown'] = trim((string) $item['spec_markdown']);
+            }
+            Db::name('ai_dev_tasks')->where('id', (int) $task['id'])->update($update);
         }
     }
 
@@ -300,7 +331,7 @@ class BreakdownService
         }
         if ($manual) {
             $task = "你是研发负责人。阅读需求文档,下方项目已由人工确认为本需求涉及的项目。\n"
-                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"role\":\"前端|后端|其他\",\"scope_summary\":\"...\",\"spec_markdown\":\"...\",\"interfaces\":\"...\",\"depends_on_projects\":[\"...\"],\"dependency_stage\":\"before_coding|none\",\"dependency_reason\":\"...\"}]}\n"
+                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"role\":\"前端|后端|其他\",\"scope_summary\":\"...\",\"interfaces\":\"...\",\"depends_on_projects\":[\"...\"],\"dependency_stage\":\"before_coding|none\",\"dependency_reason\":\"...\"}]}\n"
                 . "所有 Markdown 字段必须是合法 JSON 字符串,换行使用 \\n 转义,不要输出 JSON 代码块或 JSON 外的文字。\n"
                 . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口契约 / ## 风险点。\n"
                 . "其中 ## 跨项目接口契约 必须独立且完整:写清接口路径、入参出参、字段口径、用户标识来源、谁读谁写;它是后续各项目子文档共享的唯一事实源。\n"
@@ -309,16 +340,12 @@ class BreakdownService
                 . "role 依据项目简介判定:以页面/H5/PC 展示为主填『前端』,以接口/代理/数据/日志为主填『后端』,无法归类填『其他』。\n"
                 . "必须显式输出项目依赖关系:前端项目若需要调用后端接口,depends_on_projects 必须填提供接口的后端 project_name,dependency_stage 填 before_coding,dependency_reason 写清依赖的接口/数据契约;后端接口提供方通常不依赖前端,填空数组和 none。依赖项目名必须从项目列表原样取。\n"
                 . "projects 必须为下方**每一个**项目各输出一条,不得新增或遗漏;project_name 必须从列表原样取;"
-                . "scope_summary 用 1 段话说明该项目在本需求中要做什么;spec_markdown 是该项目可直接落地的本项目需求文档;interfaces 说明与其他项目的接口约定,没有则留空。\n"
-                . "不同 role 的 spec_markdown 必须使用不同章节骨架,不要让前端和后端文档看起来像同一份模板。\n"
-                . "后端项目 spec_markdown 第一行必须是 `# {project_name} 后端需求文档`,章节必须围绕:## 后端交付目标 / ## API 接口范围 / ## 数据来源与聚合口径 / ## 汇总缓存与刷新策略 / ## 权限、脱敏与审计 / ## 异常状态与降级 / ## 后端验收标准。\n"
-                . "前端项目 spec_markdown 第一行必须是 `# {project_name} 前端需求文档`,章节必须围绕:## 页面与入口 / ## PC 信息架构 / ## H5 降级体验 / ## 筛选、列表与详情交互 / ## 接口消费与字段展示 / ## 空态、错误态与脱敏 / ## 前端验收标准。\n"
-                . "前端项目只写页面/模块范围、PC/H5 信息层级、交互流程、展示字段、脱敏和验收;禁止定义 SQL、表结构、缓存刷新或后端实现。后端项目只写接口、数据口径、日志快照、缓存策略、权限安全和验收;禁止展开页面布局、组件状态或前端交互实现。\n"
-                . "spec_markdown 不要复制原文或共享契约全文,跨项目 API 完整 schema 统一引用『见共享接口契约』。\n\n"
+                . "scope_summary 用 1 段话说明该项目在本需求中要做什么;interfaces 只写该项目提供或消费的接口摘要,没有则留空。\n"
+                . "本阶段只做分工和共享契约,不要输出每项目完整需求子文档,不要写 spec_markdown;确认拆解后系统会按项目逐一生成子文档。\n\n"
                 . "# 本需求涉及的项目(人工确认)\n";
         } else {
             $task = "你是研发负责人。阅读需求文档,从下方候选项目中判断本需求涉及哪些项目,并给出拆解。\n"
-                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"role\":\"前端|后端|其他\",\"scope_summary\":\"...\",\"spec_markdown\":\"...\",\"interfaces\":\"...\",\"depends_on_projects\":[\"...\"],\"dependency_stage\":\"before_coding|none\",\"dependency_reason\":\"...\"}]}\n"
+                . "只返回 JSON,结构:{\"breakdown_markdown\":\"...\",\"projects\":[{\"project_name\":\"...\",\"role\":\"前端|后端|其他\",\"scope_summary\":\"...\",\"interfaces\":\"...\",\"depends_on_projects\":[\"...\"],\"dependency_stage\":\"before_coding|none\",\"dependency_reason\":\"...\"}]}\n"
                 . "所有 Markdown 字段必须是合法 JSON 字符串,换行使用 \\n 转义,不要输出 JSON 代码块或 JSON 外的文字。\n"
                 . "breakdown_markdown 用中文 Markdown,包含:## 需求理解 / ## 涉及项目与分工 / ## 跨项目接口契约 / ## 风险点。\n"
                 . "其中 ## 跨项目接口契约 必须独立且完整:写清接口路径、入参出参、字段口径、用户标识来源、谁读谁写;它是后续各项目子文档共享的唯一事实源。\n"
@@ -326,12 +353,8 @@ class BreakdownService
                 . "判定分工时,必须依据每个项目下方的 description(项目简介)界定该项目在本需求中的职责边界,只把属于它的部分划给它,不要展开任何一个项目的代码级实现细节。\n"
                 . "role 依据项目简介判定:以页面/H5/PC 展示为主填『前端』,以接口/代理/数据/日志为主填『后端』,无法归类填『其他』。\n"
                 . "必须显式输出项目依赖关系:前端项目若需要调用后端接口,depends_on_projects 必须填提供接口的后端 project_name,dependency_stage 填 before_coding,dependency_reason 写清依赖的接口/数据契约;后端接口提供方通常不依赖前端,填空数组和 none。依赖项目名必须从项目列表原样取。\n"
-                . "projects 只列确实需要改动的项目;project_name 必须从候选列表原样取;scope_summary 用 1 段话说明该项目要做什么;spec_markdown 是该项目可直接落地的本项目需求文档;interfaces 说明与其他项目的接口约定,没有则留空。\n"
-                . "不同 role 的 spec_markdown 必须使用不同章节骨架,不要让前端和后端文档看起来像同一份模板。\n"
-                . "后端项目 spec_markdown 第一行必须是 `# {project_name} 后端需求文档`,章节必须围绕:## 后端交付目标 / ## API 接口范围 / ## 数据来源与聚合口径 / ## 汇总缓存与刷新策略 / ## 权限、脱敏与审计 / ## 异常状态与降级 / ## 后端验收标准。\n"
-                . "前端项目 spec_markdown 第一行必须是 `# {project_name} 前端需求文档`,章节必须围绕:## 页面与入口 / ## PC 信息架构 / ## H5 降级体验 / ## 筛选、列表与详情交互 / ## 接口消费与字段展示 / ## 空态、错误态与脱敏 / ## 前端验收标准。\n"
-                . "前端项目只写页面/模块范围、PC/H5 信息层级、交互流程、展示字段、脱敏和验收;禁止定义 SQL、表结构、缓存刷新或后端实现。后端项目只写接口、数据口径、日志快照、缓存策略、权限安全和验收;禁止展开页面布局、组件状态或前端交互实现。\n"
-                . "spec_markdown 不要复制原文或共享契约全文,跨项目 API 完整 schema 统一引用『见共享接口契约』。\n\n"
+                . "projects 只列确实需要改动的项目;project_name 必须从候选列表原样取;scope_summary 用 1 段话说明该项目要做什么;interfaces 只写该项目提供或消费的接口摘要,没有则留空。\n"
+                . "本阶段只做分工和共享契约,不要输出每项目完整需求子文档,不要写 spec_markdown;确认拆解后系统会按项目逐一生成子文档。\n\n"
                 . "# 候选项目\n";
         }
         return $task . implode("\n", $lines) . "\n\n"

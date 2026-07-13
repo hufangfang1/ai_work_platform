@@ -14,6 +14,8 @@ html.dark {
   --danger: #f85149;
   --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
   --panel-radius: 6px;
+  --sidebar-width: 216px;
+  --mobile-sidebar-height: 122px;
 }
 
 html.dark {
@@ -104,7 +106,7 @@ textarea {
   max-width: 100vw;
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
 }
 
 .sidebar {
@@ -114,9 +116,13 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  position: sticky;
+  position: fixed;
   top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--sidebar-width);
   height: 100vh;
+  overflow-y: auto;
   z-index: 10;
 }
 
@@ -184,6 +190,7 @@ textarea {
 }
 
 .main {
+  grid-column: 2;
   min-width: 0;
   padding: 24px 28px 48px;
 }
@@ -724,10 +731,14 @@ textarea {
   }
 
   .sidebar {
-    position: sticky;
+    position: fixed;
     top: 0;
+    left: 0;
+    right: 0;
     z-index: 20;
-    height: auto;
+    height: var(--mobile-sidebar-height);
+    width: auto;
+    overflow-y: visible;
     padding: 10px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--line-soft);
@@ -764,7 +775,8 @@ textarea {
   }
 
   .main {
-    padding: 14px;
+    grid-column: auto;
+    padding: calc(var(--mobile-sidebar-height) + 14px) 14px 14px;
   }
 
   .page-heading {

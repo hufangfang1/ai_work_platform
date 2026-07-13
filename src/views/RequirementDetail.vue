@@ -250,7 +250,7 @@
               </el-collapse-item>
             </el-collapse>
             <div v-else class="task-card-spec__empty">
-              本项目需求文档未随拆解生成，请重新拆解需求；完成后会自动同步到工单。
+              本项目需求文档生成中或尚未生成，可进入工单页单独生成。
             </div>
           </div>
         </div>

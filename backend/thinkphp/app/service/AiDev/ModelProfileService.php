@@ -178,6 +178,20 @@ class ModelProfileService
             $parts[] = '--allowedTools';
             $parts[] = escapeshellarg((string) $opts['allowed_tools']);
         }
+        // 只读生成步骤(计划/规格/拆解/评审)禁止派生子代理:--allowedTools 只是免确认白名单,
+        // 并不阻止 Task。放任 Task 会 fan-out 多个探索子代理,既拖慢速度,又让 stream 出现多段
+        // init/result——主结果早已产出、进程却迟迟不退出,最终撞上超时。编码步骤(edit=true)不受限。
+        $disallowed = [];
+        if (empty($opts['edit'])) {
+            $disallowed[] = 'Task';
+        }
+        if (!empty($opts['disallowed_tools'])) {
+            $disallowed[] = (string) $opts['disallowed_tools'];
+        }
+        if ($disallowed) {
+            $parts[] = '--disallowedTools';
+            $parts[] = escapeshellarg(implode(',', $disallowed));
+        }
         if (isset($opts['max_turns'])) {
             $parts[] = '--max-turns';
             $parts[] = (string) (int) $opts['max_turns'];
@@ -214,7 +228,7 @@ class ModelProfileService
      * proc_open 用的环境变量数组;档案没有 env 覆盖时返回 null(继承当前进程环境)。
      * 注意 proc_open 传了数组就是子进程的完整环境,必须在当前环境基础上合并。
      */
-    public function processEnv($key)
+    public function processEnv($key, $tempDir = '')
     {
         $overrides = [];
         $profile = $this->profile($key);
@@ -230,6 +244,14 @@ class ModelProfileService
                     $overrides[(string) $name] = (string) $value;
                 }
             }
+        }
+
+        // 放宽单次输出上限,避免长计划/规格/拆解的 JSON 被截断。档案可用 env 覆盖或用 max_output_tokens 单独指定。
+        $maxOutput = isset($profile['max_output_tokens']) && (int) $profile['max_output_tokens'] > 0
+            ? (int) $profile['max_output_tokens']
+            : (int) config('ai_dev.agent.max_output_tokens', 0);
+        if ($maxOutput > 0) {
+            $overrides['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = (string) $maxOutput;
         }
 
         if ($profile) {
@@ -277,10 +299,23 @@ class ModelProfileService
             }
         }
 
+        if ($tempDir !== '') {
+            $overrides = array_merge($overrides, [
+                'TMPDIR' => rtrim((string) $tempDir, '/'),
+                'TMP' => rtrim((string) $tempDir, '/'),
+                'TEMP' => rtrim((string) $tempDir, '/'),
+                'TMPPREFIX' => rtrim((string) $tempDir, '/') . '/zsh',
+                'XDG_CACHE_HOME' => rtrim((string) $tempDir, '/') . '/cache',
+                'DARWIN_USER_TEMP_DIR' => rtrim((string) $tempDir, '/') . '/',
+                'DARWIN_USER_CACHE_DIR' => rtrim((string) $tempDir, '/') . '/cache/',
+            ]);
+        }
+
         if (!$overrides) {
             return null;
         }
-        return array_merge(getenv(), $overrides);
+        $env = getenv();
+        return array_merge(is_array($env) ? $env : [], $overrides);
     }
 
     /**

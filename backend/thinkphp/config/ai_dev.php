@@ -5,6 +5,15 @@ return [
         'command' => env('ai_dev.claude_command', 'claude'),
         'max_turns' => env('ai_dev.max_turns', 50),
         'timeout' => env('ai_dev.timeout', 1800),
+        // 单次回复的最大输出 token。生成类步骤(计划/规格/拆解)的 markdown 很长,
+        // 默认值过小会让模型把 JSON 说到一半就被截断("JSON 解析失败")。给足预算,
+        // 最终上限仍由模型/网关裁剪。设 0 = 不注入,沿用 CLI/网关默认。
+        'max_output_tokens' => (int) env('ai_dev.max_output_tokens', 32000),
+        // 开发计划这类"先读代码再产出长文档"的步骤耗时较长(强模型会多轮探索),
+        // 600s 常在模型正要输出最终 JSON 时被掐断("执行超时")。给足时间预算。
+        'plan_timeout' => (int) env('ai_dev.plan_timeout', 1200),
+        // AI Review 需多轮 Read/Grep 读 diff 与代码,fix 后改动面更大;300s 易超时。
+        'review_timeout' => (int) env('ai_dev.review_timeout', 900),
         'permission_mode' => 'acceptEdits',
         'output_format' => 'stream-json',
         // 追加到每次 agent 调用的 system 指令:统一用中文对话/说明,但技术标识符保持原样。

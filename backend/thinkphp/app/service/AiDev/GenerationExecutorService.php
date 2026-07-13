@@ -5,10 +5,14 @@ namespace app\service\AiDev;
 class GenerationExecutorService
 {
     private $lastResultText = null;
+    /** @var string[] stream 里历次 result 文本,避免最后一次只是说明性短句而丢掉真正的 JSON */
+    private $resultTexts = [];
     private $modelKey = '';
 
     public function execute($runId)
     {
+        $this->lastResultText = null;
+        $this->resultTexts = [];
         $runService = new RunService();
         $run = $runService->detail($runId);
         if (!$run) {
@@ -59,85 +63,110 @@ class GenerationExecutorService
             return trim($text);
         }
 
-        $promptFile = sys_get_temp_dir() . '/ai-dev-generation-prompt-' . $runId . '.md';
-        file_put_contents($promptFile, $prompt);
-        // 生成类任务只读仓库产出 JSON,不改代码。
-        $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
-            'max_turns' => $maxTurns,
-            'allowed_tools' => isset($options['allowed_tools']) ? (string) $options['allowed_tools'] : '',
-            'edit' => false,
-        ]);
+        $tempService = new ProcessTempService();
+        $tempDir = $tempService->create($cwd, 'generation', $runId);
+        try {
+            $promptFile = $tempService->writeFile($tempDir, 'prompt.md', $prompt);
+            // 生成类任务只读仓库产出 JSON,不改代码。
+            $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
+                'max_turns' => $maxTurns,
+                'allowed_tools' => isset($options['allowed_tools']) ? (string) $options['allowed_tools'] : '',
+                'edit' => false,
+            ]);
 
-        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-        $process = proc_open($cmd, $descriptors, $pipes, $cwd, $modelProfile->processEnv($modelKey));
-        if (!is_resource($process)) {
-            throw new \RuntimeException('claude 子进程启动失败');
-        }
-        $status = proc_get_status($process);
-        $runService->markRunning($runId, (int) $status['pid']);
-        fclose($pipes[0]);
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-
-        $startedAt = time();
-        $output = '';
-        $error = '';
-        $exitCode = -1;
-        $termSignal = 0;
-        $stdoutBuf = '';
-        $stderrBuf = '';
-        $onStdout = function ($line) use ($runService, $runId, &$output) {
-            $output .= $line . "\n";
-            $this->handleStreamLine($runService, $runId, trim($line));
-        };
-        $onStderr = function ($line) use ($runService, $runId, &$error) {
-            $error .= $line . "\n";
-            if (trim($line) !== '') {
-                $runService->appendLog($runId, 'stderr', trim($line));
+            $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+            $process = proc_open($cmd, $descriptors, $pipes, $cwd, $modelProfile->processEnv($modelKey, $tempDir));
+            if (!is_resource($process)) {
+                throw new \RuntimeException('claude 子进程启动失败');
             }
-        };
+            $status = proc_get_status($process);
+            $runService->markRunning($runId, (int) $status['pid']);
+            fclose($pipes[0]);
+            stream_set_blocking($pipes[1], false);
+            stream_set_blocking($pipes[2], false);
 
-        while (true) {
+            $startedAt = time();
+            $output = '';
+            $error = '';
+            $exitCode = -1;
+            $termSignal = 0;
+            $salvaged = false;
+            $stdoutBuf = '';
+            $stderrBuf = '';
+            $onStdout = function ($line) use ($runService, $runId, &$output) {
+                $output .= $line . "\n";
+                $this->handleStreamLine($runService, $runId, trim($line));
+            };
+            $onStderr = function ($line) use ($runService, $runId, &$error) {
+                $error .= $line . "\n";
+                if (trim($line) !== '') {
+                    $runService->appendLog($runId, 'stderr', trim($line));
+                }
+            };
+
+            while (true) {
+                $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
+                $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
+                $status = proc_get_status($process);
+                if (!$status['running']) {
+                    $exitCode = $status['exitcode'];
+                    if (!empty($status['signaled'])) {
+                        $termSignal = (int) $status['termsig'];
+                    }
+                    break;
+                }
+                if (time() - $startedAt > $timeout) {
+                    proc_terminate($process);
+                    $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
+                    $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
+                    if ($stdoutBuf !== '') {
+                        $onStdout($stdoutBuf);
+                    }
+                    if ($stderrBuf !== '') {
+                        $onStderr($stderrBuf);
+                    }
+                    $candidate = $this->pickResultText($output);
+                    if ($candidate !== '') {
+                        try {
+                            $this->extractJsonObject($candidate);
+                            $runService->appendLog($runId, 'stdout', '已超过 ' . $timeout . 's 且进程未自行结束,但已取得完整结果,采用该结果结束本次运行。');
+                            $salvaged = true;
+                            break;
+                        } catch (\RuntimeException $e) {
+                            /* 尚无可用 JSON,继续走下方兜底 */
+                        }
+                    }
+                    if ($this->lastResultText !== null && trim((string) $this->lastResultText) !== '') {
+                        $runService->appendLog($runId, 'stdout', '已超过 ' . $timeout . 's 且进程未自行结束,但已取得完整结果,采用该结果结束本次运行。');
+                        $salvaged = true;
+                        break;
+                    }
+                    throw new \RuntimeException('执行超时');
+                }
+                usleep(100000);
+            }
+
             $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
             $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
-            $status = proc_get_status($process);
-            if (!$status['running']) {
-                $exitCode = $status['exitcode'];
-                if (!empty($status['signaled'])) {
-                    $termSignal = (int) $status['termsig'];
-                }
-                break;
+            if ($stdoutBuf !== '') {
+                $onStdout($stdoutBuf);
             }
-            if (time() - $startedAt > $timeout) {
-                proc_terminate($process);
-                @unlink($promptFile);
-                throw new \RuntimeException('执行超时');
+            if ($stderrBuf !== '') {
+                $onStderr($stderrBuf);
             }
-            usleep(100000);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            proc_close($process);
+        } finally {
+            $tempService->cleanup($tempDir);
         }
 
-        $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
-        $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
-        if ($stdoutBuf !== '') {
-            $onStdout($stdoutBuf);
-        }
-        if ($stderrBuf !== '') {
-            $onStderr($stderrBuf);
-        }
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        proc_close($process);
-        @unlink($promptFile);
-
-        if ($exitCode !== 0) {
+        if (!$salvaged && $exitCode !== 0) {
             $message = $this->buildFailureMessage($exitCode, $termSignal, $error);
             $runService->appendLog($runId, 'error', $message);
             throw new \RuntimeException($message);
         }
-        if ($this->lastResultText !== null) {
-            return trim((string) $this->lastResultText);
-        }
-        return trim($output);
+        return $this->pickResultText($output);
     }
 
     private function applyResult(array $run, array $data)
@@ -191,7 +220,11 @@ class GenerationExecutorService
             $type = isset($event['type']) ? $event['type'] : 'json';
             $resultText = (new ModelProfileService())->streamResultText($this->modelKey, $event);
             if ($resultText !== null) {
-                $this->lastResultText = $resultText;
+                $text = trim((string) $resultText);
+                $this->lastResultText = $text;
+                if ($text !== '') {
+                    $this->resultTexts[] = $text;
+                }
             }
             if ($type === 'system' && isset($event['subtype']) && $event['subtype'] === 'thinking_tokens') {
                 return;
@@ -202,42 +235,368 @@ class GenerationExecutorService
         $runService->appendLog($runId, 'stdout', $line);
     }
 
+    private function pickResultText($output)
+    {
+        $candidates = $this->resultTexts;
+        $output = trim((string) $output);
+        if ($output !== '') {
+            $candidates[] = $output;
+        }
+        $candidates = array_values(array_unique(array_filter($candidates, function ($text) {
+            return trim((string) $text) !== '';
+        })));
+        if (!$candidates) {
+            return '';
+        }
+        $markers = ['plan_markdown', 'spec_markdown', 'breakdown_markdown', 'commit_message', 'branch_name', 'blocking_issues'];
+        foreach ($candidates as $text) {
+            foreach ($markers as $marker) {
+                if (strpos($text, '"' . $marker . '"') !== false) {
+                    return $text;
+                }
+            }
+        }
+        $withJson = array_values(array_filter($candidates, function ($text) {
+            return strpos($text, '{') !== false;
+        }));
+        if ($withJson) {
+            usort($withJson, function ($a, $b) {
+                return strlen($b) - strlen($a);
+            });
+            return $withJson[0];
+        }
+        return $candidates[count($candidates) - 1];
+    }
+
+    /** 从 ai_review run 日志打捞 Review JSON(解析落库失败时的兜底)。 */
+    public function parseReviewResultFromRunLogs($runId)
+    {
+        $this->resultTexts = [];
+        $this->lastResultText = null;
+        $logs = (new RunService())->logs((int) $runId, 0);
+        for ($i = count($logs) - 1; $i >= 0; $i--) {
+            $content = isset($logs[$i]['content']) ? (string) $logs[$i]['content'] : '';
+            $event = json_decode($content, true);
+            if (!is_array($event) || empty($event['result'])) {
+                continue;
+            }
+            try {
+                $data = $this->extractJsonObject((string) $event['result']);
+                if (is_array($data) && (!empty($data['blocking_issues']) || ($data['status'] ?? '') === 'pass')) {
+                    return $data;
+                }
+            } catch (\RuntimeException $e) {
+                continue;
+            }
+        }
+        return null;
+    }
+
     private function extractJsonObject($raw)
     {
-        $cleaned = preg_replace('/^```(json)?\s*$|^```\s*$/m', '', (string) $raw);
+        $fallback = null;
+        foreach ($this->resultTextCandidates($raw) as $candidate) {
+            $data = $this->tryParseJsonCandidate($candidate);
+            if (!is_array($data)) {
+                continue;
+            }
+            if (!empty($data['blocking_issues'])) {
+                return $data;
+            }
+            if (($data['status'] ?? '') === 'pass') {
+                return $data;
+            }
+            if ($fallback === null && isset($data['status']) && in_array($data['status'], ['pass', 'fail'], true)) {
+                $fallback = $data;
+            }
+        }
+        if ($fallback !== null) {
+            foreach ($this->resultTextCandidates($raw) as $candidate) {
+                $recovered = $this->recoverReviewResult($candidate);
+                if (is_array($recovered) && !empty($recovered['blocking_issues'])) {
+                    return $recovered;
+                }
+            }
+            return $fallback;
+        }
+        throw new \RuntimeException(
+            'claude JSON 解析失败(可能输出超长被截断,可调大 ai_dev.max_output_tokens): '
+            . mb_substr((string) $raw, 0, 200)
+        );
+    }
+
+    private function resultTextCandidates($raw)
+    {
+        $candidates = $this->resultTexts;
+        $raw = trim((string) $raw);
+        if ($raw !== '') {
+            $candidates[] = $raw;
+        }
+        $seen = [];
+        $ordered = [];
+        foreach ($candidates as $text) {
+            $text = trim((string) $text);
+            if ($text === '' || isset($seen[$text])) {
+                continue;
+            }
+            $seen[$text] = true;
+            $ordered[] = $text;
+        }
+        usort($ordered, function ($a, $b) {
+            return strlen($b) - strlen($a);
+        });
+        return $ordered;
+    }
+
+    private function tryParseJsonCandidate($raw)
+    {
+        $cleaned = preg_replace('/^```(json)?\s*$|^```\s*$/m', '', trim((string) $raw));
+        if ($cleaned === '') {
+            return null;
+        }
+        $json = $this->sliceBalancedJson($cleaned);
+        if ($json !== null) {
+            $data = json_decode($json, true);
+            if (is_array($data)) {
+                if (!empty($data['blocking_issues']) || ($data['status'] ?? '') === 'pass') {
+                    return $data;
+                }
+                $recovered = $this->recoverReviewResult($cleaned);
+                if (is_array($recovered) && !empty($recovered['blocking_issues'])) {
+                    return $recovered;
+                }
+                return $data;
+            }
+        }
         $start = strpos($cleaned, '{');
-        $end = strrpos($cleaned, '}');
-        if ($start === false || $end === false || $end <= $start) {
-            throw new \RuntimeException('claude 未返回 JSON: ' . mb_substr((string) $raw, 0, 200));
+        if ($start !== false) {
+            $fromStart = substr($cleaned, $start);
+            $data = $this->recoverMarkdownField($fromStart) ?: $this->recoverMarkdownField($cleaned);
+            if (is_array($data)) {
+                return $data;
+            }
         }
-        $json = substr($cleaned, $start, $end - $start + 1);
-        $data = json_decode($json, true);
-        if (!is_array($data)) {
-            $data = $this->recoverMarkdownField($json) ?: $this->recoverMarkdownField($cleaned);
+        $data = $this->recoverMarkdownField($cleaned);
+        if (is_array($data)) {
+            return $data;
         }
-        if (!is_array($data)) {
-            throw new \RuntimeException('claude JSON 解析失败: ' . mb_substr((string) $raw, 0, 200));
+        return $this->recoverReviewResult($cleaned);
+    }
+
+    /** AI Review 偶发输出 summary 键名损坏的 JSON,回退用正则提取各列表字段。 */
+    private function recoverReviewResult($text)
+    {
+        if (strpos((string) $text, 'blocking_issues') === false) {
+            return null;
         }
-        return $data;
+        $status = preg_match('/"status"\s*:\s*"(pass|fail)"/', $text, $m) ? $m[1] : 'fail';
+        $risk = preg_match('/"risk_level"\s*:\s*"(low|medium|high)"/', $text, $m) ? $m[1] : ($status === 'pass' ? 'low' : 'high');
+        $summary = '';
+        if (preg_match('/"summary[^"]*"\s*:\s*"([^"]+)"/u', $text, $m)) {
+            $summary = $m[1];
+        } elseif (preg_match('/"summary([^",]+)"/u', $text, $m)) {
+            $summary = ltrim($m[1], '": ');
+        }
+        $blocking = $this->extractReviewStringArray($text, 'blocking_issues');
+        if (!$blocking) {
+            return null;
+        }
+        return [
+            'status' => $status,
+            'risk_level' => $risk,
+            'summary' => $summary,
+            'blocking_issues' => $blocking,
+            'warnings' => $this->extractReviewStringArray($text, 'warnings'),
+            'suggestions' => $this->extractReviewStringArray($text, 'suggestions'),
+        ];
+    }
+
+    private function extractReviewStringArray($text, $field)
+    {
+        if (!preg_match('/"' . preg_quote($field, '/') . '"\s*:\s*\[/', $text, $m, PREG_OFFSET_CAPTURE)) {
+            return [];
+        }
+        $start = $m[0][1] + strlen($m[0][0]) - 1;
+        $slice = $this->sliceBalancedBracket(substr($text, $start));
+        if ($slice === null) {
+            return [];
+        }
+        $data = json_decode($slice, true);
+        return is_array($data) ? $data : [];
+    }
+
+    private function sliceBalancedBracket($text)
+    {
+        $text = (string) $text;
+        $start = strpos($text, '[');
+        if ($start === false) {
+            return null;
+        }
+        $len = strlen($text);
+        $depth = 0;
+        $inString = false;
+        $escape = false;
+        for ($i = $start; $i < $len; $i++) {
+            $ch = $text[$i];
+            if ($escape) {
+                $escape = false;
+                continue;
+            }
+            if ($inString) {
+                if ($ch === '\\') {
+                    $escape = true;
+                } elseif ($ch === '"') {
+                    $inString = false;
+                }
+                continue;
+            }
+            if ($ch === '"') {
+                $inString = true;
+                continue;
+            }
+            if ($ch === '[') {
+                $depth++;
+            } elseif ($ch === ']') {
+                $depth--;
+                if ($depth === 0) {
+                    return substr($text, $start, $i - $start + 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    private function sliceBalancedJson($text)
+    {
+        $text = (string) $text;
+        $start = strpos($text, '{');
+        if ($start === false) {
+            return null;
+        }
+        $len = strlen($text);
+        $depth = 0;
+        $inString = false;
+        $escape = false;
+        for ($i = $start; $i < $len; $i++) {
+            $ch = $text[$i];
+            if ($escape) {
+                $escape = false;
+                continue;
+            }
+            if ($inString) {
+                if ($ch === '\\') {
+                    $escape = true;
+                } elseif ($ch === '"') {
+                    $inString = false;
+                }
+                continue;
+            }
+            if ($ch === '"') {
+                $inString = true;
+                continue;
+            }
+            if ($ch === '{') {
+                $depth++;
+            } elseif ($ch === '}') {
+                $depth--;
+                if ($depth === 0) {
+                    return substr($text, $start, $i - $start + 1);
+                }
+            }
+        }
+        return null;
     }
 
     private function recoverMarkdownField($json)
     {
+        $json = trim((string) $json);
         foreach (['spec_markdown', 'plan_markdown', 'breakdown_markdown'] as $field) {
-            $pattern = '/"' . preg_quote($field, '/') . '"\s*:\s*"([\s\S]*)"\s*}\s*$/';
-            if (!preg_match($pattern, trim((string) $json), $matches)) {
-                continue;
-            }
-            $decoded = json_decode('"' . $matches[1] . '"', true);
-            if (!is_string($decoded)) {
-                $decoded = stripcslashes($matches[1]);
-            }
-            $decoded = trim($decoded);
-            if ($decoded !== '') {
+            $decoded = $this->extractJsonStringField($json, $field);
+            if ($decoded !== null && $decoded !== '') {
                 return [$field => $decoded];
+            }
+            // 完整:字段值以 "} 正常闭合。
+            $pattern = '/"' . preg_quote($field, '/') . '"\s*:\s*"([\s\S]*)"\s*}\s*$/';
+            if (preg_match($pattern, $json, $matches)) {
+                $decoded = $this->decodeJsonStringBody($matches[1]);
+                if ($decoded !== '') {
+                    return [$field => $decoded];
+                }
+            }
+            // 截断:字段开头在,但没有正常闭合。抢救已生成部分,并明确标注不完整。
+            $truncPattern = '/"' . preg_quote($field, '/') . '"\s*:\s*"([\s\S]+)$/';
+            if (preg_match($truncPattern, $json, $matches)) {
+                $decoded = $this->decodeTruncatedJsonStringBody($matches[1]);
+                if (mb_strlen($decoded) >= 50) {
+                    return [$field => $decoded . "\n\n> ⚠️ 模型输出超出最大长度被截断,以上内容不完整。请调大 ai_dev.max_output_tokens 或改用更大输出上限的模型后重新生成。"];
+                }
             }
         }
         return null;
+    }
+
+    private function extractJsonStringField($raw, $field)
+    {
+        $raw = (string) $raw;
+        $endAnchored = '/"' . preg_quote($field, '/') . '"\s*:\s*"(.*)"\s*}\s*$/s';
+        if (preg_match($endAnchored, $raw, $matches)) {
+            $decoded = $this->decodeJsonStringBody($matches[1]);
+            if ($decoded !== '') {
+                return $decoded;
+            }
+            $fallback = trim(stripcslashes($matches[1]));
+            if ($fallback !== '') {
+                return $fallback;
+            }
+        }
+
+        // 输出超长被截断时没有闭合的 `"}`:抢救从字段开头到全文末尾的内容。
+        $truncated = '/"' . preg_quote($field, '/') . '"\s*:\s*"(.*)$/s';
+        if (preg_match($truncated, $raw, $matches)) {
+            $body = preg_replace('/"\s*}\s*$/', '', $matches[1]);
+            $decoded = $this->decodeTruncatedJsonStringBody($body);
+            if (mb_strlen($decoded) < 200) {
+                $decoded = trim(str_replace(['\\n', '\\t', '\\"', '\\\\'], ["\n", "\t", '"', '\\'], $body));
+            }
+            if (mb_strlen($decoded) >= 200) {
+                $suffix = preg_match($endAnchored, $raw)
+                    ? ''
+                    : "\n\n> ⚠️ 模型输出超出最大长度被截断,以上内容可能不完整。请调大 ai_dev.max_output_tokens 或改用更大输出上限的模型后重新生成。";
+                return $decoded . $suffix;
+            }
+        }
+
+        return null;
+    }
+
+    /** 把一段 JSON 字符串字面量的内容(不含外层引号)解码为纯文本。 */
+    private function decodeJsonStringBody($body)
+    {
+        $decoded = json_decode('"' . $body . '"', true);
+        if (!is_string($decoded)) {
+            $decoded = stripcslashes((string) $body);
+        }
+        return trim((string) $decoded);
+    }
+
+    /** 解码被截断的 JSON 字符串体:先去掉尾部残缺的转义,再逐字回退直到能解析。 */
+    private function decodeTruncatedJsonStringBody($body)
+    {
+        $body = (string) $body;
+        // 截断抢救时,尾部常会带上 `"}` 或残缺的 JSON 闭合符。
+        $body = preg_replace('/"\s*}\s*$/', '', $body);
+        $body = preg_replace('/"\s*$/', '', $body);
+        // 去掉结尾残缺的 \uXXXX 与落单的反斜杠,避免整体解析失败。
+        $body = preg_replace('/\\\\u[0-9a-fA-F]{0,3}$/', '', $body);
+        $body = preg_replace('/\\\\+$/', '', $body);
+        for ($i = 0; $i < 8 && $body !== ''; $i++) {
+            $decoded = json_decode('"' . $body . '"', true);
+            if (is_string($decoded)) {
+                return trim($decoded);
+            }
+            $body = substr($body, 0, -1);
+        }
+        return trim(stripcslashes($body));
     }
 
     private function buildFailureMessage($exitCode, $termSignal, $error)

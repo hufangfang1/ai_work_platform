@@ -61,74 +61,77 @@ class CommitMessageExecutorService
             return trim($text);
         }
 
-        $promptFile = sys_get_temp_dir() . '/ai-dev-commit-message-prompt-' . $runId . '.md';
-        file_put_contents($promptFile, $prompt);
-        // 只读生成 commit message,不改代码。
-        $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
-            'max_turns' => $maxTurns,
-            'edit' => false,
-        ]);
+        $tempService = new ProcessTempService();
+        $tempDir = $tempService->create($cwd, 'commit-message', $runId);
+        try {
+            $promptFile = $tempService->writeFile($tempDir, 'prompt.md', $prompt);
+            // 只读生成 commit message,不改代码。
+            $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
+                'max_turns' => $maxTurns,
+                'edit' => false,
+            ]);
 
-        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-        $process = proc_open($cmd, $descriptors, $pipes, $cwd, $modelProfile->processEnv($modelKey));
-        if (!is_resource($process)) {
-            throw new \RuntimeException('claude 子进程启动失败');
-        }
-        $status = proc_get_status($process);
-        $runService->markRunning($runId, (int) $status['pid']);
-        fclose($pipes[0]);
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-
-        $startedAt = time();
-        $output = '';
-        $error = '';
-        $exitCode = -1;
-        $termSignal = 0;
-        $stdoutBuf = '';
-        $stderrBuf = '';
-        $onStdout = function ($line) use ($runService, $runId, &$output) {
-            $output .= $line . "\n";
-            $this->handleStreamLine($runService, $runId, trim($line));
-        };
-        $onStderr = function ($line) use ($runService, $runId, &$error) {
-            $error .= $line . "\n";
-            if (trim($line) !== '') {
-                $runService->appendLog($runId, 'stderr', trim($line));
+            $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+            $process = proc_open($cmd, $descriptors, $pipes, $cwd, $modelProfile->processEnv($modelKey, $tempDir));
+            if (!is_resource($process)) {
+                throw new \RuntimeException('claude 子进程启动失败');
             }
-        };
+            $status = proc_get_status($process);
+            $runService->markRunning($runId, (int) $status['pid']);
+            fclose($pipes[0]);
+            stream_set_blocking($pipes[1], false);
+            stream_set_blocking($pipes[2], false);
 
-        while (true) {
+            $startedAt = time();
+            $output = '';
+            $error = '';
+            $exitCode = -1;
+            $termSignal = 0;
+            $stdoutBuf = '';
+            $stderrBuf = '';
+            $onStdout = function ($line) use ($runService, $runId, &$output) {
+                $output .= $line . "\n";
+                $this->handleStreamLine($runService, $runId, trim($line));
+            };
+            $onStderr = function ($line) use ($runService, $runId, &$error) {
+                $error .= $line . "\n";
+                if (trim($line) !== '') {
+                    $runService->appendLog($runId, 'stderr', trim($line));
+                }
+            };
+
+            while (true) {
+                $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
+                $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
+                $status = proc_get_status($process);
+                if (!$status['running']) {
+                    $exitCode = $status['exitcode'];
+                    if (!empty($status['signaled'])) {
+                        $termSignal = (int) $status['termsig'];
+                    }
+                    break;
+                }
+                if (time() - $startedAt > $timeout) {
+                    proc_terminate($process);
+                    throw new \RuntimeException('执行超时');
+                }
+                usleep(100000);
+            }
+
             $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
             $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
-            $status = proc_get_status($process);
-            if (!$status['running']) {
-                $exitCode = $status['exitcode'];
-                if (!empty($status['signaled'])) {
-                    $termSignal = (int) $status['termsig'];
-                }
-                break;
+            if ($stdoutBuf !== '') {
+                $onStdout($stdoutBuf);
             }
-            if (time() - $startedAt > $timeout) {
-                proc_terminate($process);
-                @unlink($promptFile);
-                throw new \RuntimeException('执行超时');
+            if ($stderrBuf !== '') {
+                $onStderr($stderrBuf);
             }
-            usleep(100000);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            proc_close($process);
+        } finally {
+            $tempService->cleanup($tempDir);
         }
-
-        $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
-        $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
-        if ($stdoutBuf !== '') {
-            $onStdout($stdoutBuf);
-        }
-        if ($stderrBuf !== '') {
-            $onStderr($stderrBuf);
-        }
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        proc_close($process);
-        @unlink($promptFile);
 
         if ($exitCode !== 0) {
             $message = $this->buildFailureMessage($exitCode, $termSignal, $error);

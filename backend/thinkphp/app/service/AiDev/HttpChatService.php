@@ -43,11 +43,19 @@ class HttpChatService
         }
         $messages[] = ['role' => 'user', 'content' => (string) $prompt];
 
-        $body = json_encode([
+        $payload = [
             'model' => $model,
             'messages' => $messages,
             'stream' => false,
-        ], JSON_UNESCAPED_UNICODE);
+        ];
+        // 放宽单次输出上限,避免长计划/规格/拆解的 JSON 被截断。档案可用 max_output_tokens 覆盖。
+        $maxTokens = isset($profile['max_output_tokens']) && (int) $profile['max_output_tokens'] > 0
+            ? (int) $profile['max_output_tokens']
+            : (int) config('ai_dev.agent.max_output_tokens', 0);
+        if ($maxTokens > 0) {
+            $payload['max_tokens'] = $maxTokens;
+        }
+        $body = json_encode($payload, JSON_UNESCAPED_UNICODE);
 
         // 档案自带 timeout_seconds 优先,否则用执行器传入的 timeout,再兜底 300。
         $timeout = isset($profile['timeout_seconds']) && (int) $profile['timeout_seconds'] > 0

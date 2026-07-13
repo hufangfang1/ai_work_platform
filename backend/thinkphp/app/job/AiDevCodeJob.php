@@ -4,7 +4,6 @@ namespace app\job;
 
 use app\service\AiDev\AgentExecutorService;
 use app\service\AiDev\RunService;
-use app\service\AiDev\TaskService;
 use think\queue\Job;
 
 class AiDevCodeJob
@@ -32,7 +31,7 @@ class AiDevCodeJob
             $runService->appendLog($runId, 'error', $e->getMessage());
             $runService->finish($runId, 'failed', '', $e->getMessage());
             if ($run) {
-                (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
+                $runService->restoreStatusAfterCodeRunFailure($run);
             }
             $job->delete();
         }
@@ -48,7 +47,7 @@ class AiDevCodeJob
         $run = $runService->detail($runId);
         $runService->finish($runId, 'failed', '', $run && $run['error'] ? $run['error'] : '队列任务执行失败');
         if ($run) {
-            (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
+            $runService->restoreStatusAfterCodeRunFailure($run);
         }
     }
 }

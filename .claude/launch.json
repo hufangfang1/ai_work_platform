@@ -2,29 +2,11 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "frontend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 5173
-    },
-    {
       "name": "backend",
       "runtimeExecutable": "php",
       "runtimeArgs": ["think", "run", "-p", "8000"],
       "cwd": "backend/thinkphp",
       "port": 8000
-    },
-    {
-      "name": "frontend-preview",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5273", "--strictPort"],
-      "port": 5273
-    },
-    {
-      "name": "frontend-preview-2",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5373", "--strictPort"],
-      "port": 5373
     },
     {
       "name": "worker",

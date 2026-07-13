@@ -22,102 +22,111 @@ class AgentExecutorService
         $task = Db::name('ai_dev_tasks')->where('id', $run['task_id'])->find();
         $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
         $worktree = $this->prepareWorktree($task, $project, $runService, $runId);
-        // prompt 文件放系统临时目录，避免混进 worktree 的 diff 和 git add -A 提交
-        $promptFile = sys_get_temp_dir() . '/ai-dev-prompt-' . $runId . '.md';
-        file_put_contents($promptFile, $run['input']);
+        $tempService = new ProcessTempService();
+        $tempDir = $tempService->create($worktree, 'agent', $runId);
+        try {
+            $promptFile = $tempService->writeFile($tempDir, 'prompt.md', $run['input']);
 
-        $allowedTools = $this->buildAllowedTools($project);
-        $modelProfile = new ModelProfileService();
-        $modelKey = isset($run['model_name']) ? (string) $run['model_name'] : '';
-        $this->modelKey = $modelKey;
-        // 编码步骤要在 worktree 里真正改代码,全程无人值守。
-        $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
-            'permission_mode' => 'acceptEdits',
-            'allowed_tools' => $allowedTools,
-            'max_turns' => 50,
-            'edit' => true,
-        ]);
+            $allowedTools = $this->buildAllowedTools($project);
+            $modelProfile = new ModelProfileService();
+            $modelKey = isset($run['model_name']) ? (string) $run['model_name'] : '';
+            $this->modelKey = $modelKey;
+            // 编码步骤要在 worktree 里真正改代码,全程无人值守。
+            $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
+                'permission_mode' => 'acceptEdits',
+                'allowed_tools' => $allowedTools,
+                'max_turns' => 50,
+                'edit' => true,
+            ]);
 
-        $descriptors = [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ];
-        $process = proc_open($cmd, $descriptors, $pipes, $worktree, $modelProfile->processEnv($modelKey));
-        if (!is_resource($process)) {
-            throw new \RuntimeException('Claude Code 子进程启动失败');
-        }
-
-        $status = proc_get_status($process);
-        $runService->markRunning($runId, (int) $status['pid']);
-        // prompt 已通过命令行参数传入,关闭 stdin 避免 claude 空等 stdin。
-        fclose($pipes[0]);
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-
-        $startedAt = time();
-        $timeout = (int) (function_exists('config') ? config('ai_dev.agent.timeout', 1800) : 1800);
-        $output = '';
-        $error = '';
-        $exitCode = -1;
-        $termSignal = 0;
-        $stdoutBuf = '';
-        $stderrBuf = '';
-        $onStdout = function ($line) use ($runService, $runId, &$output) {
-            $output .= $line . "\n";
-            $this->handleStreamLine($runService, $runId, trim($line));
-        };
-        $onStderr = function ($line) use ($runService, $runId, &$error) {
-            $error .= $line . "\n";
-            if (trim($line) !== '') {
-                $runService->appendLog($runId, 'stderr', trim($line));
+            $descriptors = [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ];
+            $process = proc_open($cmd, $descriptors, $pipes, $worktree, $modelProfile->processEnv($modelKey, $tempDir));
+            if (!is_resource($process)) {
+                throw new \RuntimeException('Claude Code 子进程启动失败');
             }
-        };
-        while (true) {
-            $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
-            $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
 
             $status = proc_get_status($process);
-            if (!$status['running']) {
-                $exitCode = $status['exitcode'];
-                if (!empty($status['signaled'])) {
-                    $termSignal = (int) $status['termsig'];
+            $runService->markRunning($runId, (int) $status['pid']);
+            // prompt 已通过命令行参数传入,关闭 stdin 避免 claude 空等 stdin。
+            fclose($pipes[0]);
+            stream_set_blocking($pipes[1], false);
+            stream_set_blocking($pipes[2], false);
+
+            $startedAt = time();
+            $timeout = (int) (function_exists('config') ? config('ai_dev.agent.timeout', 1800) : 1800);
+            $output = '';
+            $error = '';
+            $exitCode = -1;
+            $termSignal = 0;
+            $stdoutBuf = '';
+            $stderrBuf = '';
+            $onStdout = function ($line) use ($runService, $runId, &$output) {
+                $output .= $line . "\n";
+                $this->handleStreamLine($runService, $runId, trim($line));
+            };
+            $onStderr = function ($line) use ($runService, $runId, &$error) {
+                $error .= $line . "\n";
+                if (trim($line) !== '') {
+                    $runService->appendLog($runId, 'stderr', trim($line));
                 }
-                break;
+            };
+            while (true) {
+                $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
+                $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
+
+                $status = proc_get_status($process);
+                if (!$status['running']) {
+                    $exitCode = $status['exitcode'];
+                    if (!empty($status['signaled'])) {
+                        $termSignal = (int) $status['termsig'];
+                    }
+                    break;
+                }
+                if (time() - $startedAt > $timeout) {
+                    proc_terminate($process);
+                    $tempService->cleanup($tempDir);
+                    $tempDir = '';
+                    $runService->finish($runId, 'failed', $output, '执行超时');
+                    $runService->restoreStatusAfterCodeRunFailure($run);
+                    return;
+                }
+                usleep(100000);
             }
-            if (time() - $startedAt > $timeout) {
-                proc_terminate($process);
-                $runService->finish($runId, 'failed', $output, '执行超时');
-                (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
+
+            $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
+            $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
+            if ($stdoutBuf !== '') {
+                $onStdout($stdoutBuf);
+            }
+            if ($stderrBuf !== '') {
+                $onStderr($stderrBuf);
+            }
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            proc_close($process);
+            $tempService->cleanup($tempDir);
+            $tempDir = '';
+
+            if ($exitCode !== 0) {
+                $message = $this->buildFailureMessage($exitCode, $termSignal, $error);
+                $runService->appendLog($runId, 'error', $message);
+                $runService->finish($runId, 'failed', $output, $message);
+                $runService->restoreStatusAfterCodeRunFailure($run);
                 return;
             }
-            usleep(100000);
-        }
 
-        $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
-        $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
-        if ($stdoutBuf !== '') {
-            $onStdout($stdoutBuf);
+            $this->collectChange($runService, $run, $task, $project, $worktree);
+            $runService->finish($runId, 'succeeded', $output, $error);
+            (new TaskService())->updateStatus((int) $run['task_id'], 'code_changed');
+        } finally {
+            if ($tempDir !== '') {
+                $tempService->cleanup($tempDir);
+            }
         }
-        if ($stderrBuf !== '') {
-            $onStderr($stderrBuf);
-        }
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        proc_close($process);
-
-        if ($exitCode !== 0) {
-            $message = $this->buildFailureMessage($exitCode, $termSignal, $error);
-            $runService->appendLog($runId, 'error', $message);
-            $runService->finish($runId, 'failed', $output, $message);
-            (new TaskService())->updateStatus((int) $run['task_id'], 'failed');
-            return;
-        }
-
-        $this->collectChange($runService, $run, $task, $project, $worktree);
-        @unlink($promptFile);
-        $runService->finish($runId, 'succeeded', $output, $error);
-        (new TaskService())->updateStatus((int) $run['task_id'], 'code_changed');
     }
 
     private function prepareWorktree(array $task, array $project, RunService $runService, $runId)
@@ -126,13 +135,13 @@ class AgentExecutorService
         if (!is_dir($repoPath . '/.git')) {
             throw new \RuntimeException('项目本地目录不是 git 仓库');
         }
-        exec('git -C ' . escapeshellarg($repoPath) . ' status --porcelain', $statusLines);
-        if (count($statusLines) > 0) {
-            throw new \RuntimeException('主工作目录存在未提交改动，已阻断执行');
-        }
 
         $worktree = dirname($repoPath) . '/wt-task-' . $task['id'];
         if (!is_dir($worktree)) {
+            exec('git -C ' . escapeshellarg($repoPath) . ' status --porcelain', $statusLines);
+            if (count($statusLines) > 0) {
+                throw new \RuntimeException('主工作目录存在未提交改动，已阻断执行');
+            }
             $cmd = sprintf(
                 'git -C %s worktree add %s -b %s origin/%s',
                 escapeshellarg($repoPath),
@@ -249,7 +258,7 @@ class AgentExecutorService
         if ($command === '') {
             return '未配置测试命令';
         }
-        exec('cd ' . escapeshellarg($worktree) . ' && ' . $command . ' 2>&1', $output, $code);
+        (new ProcessTempService())->exec($worktree, $command, $output, $code, 'project-command');
         return "命令：{$command}\n退出码：{$code}\n" . implode("\n", $output);
     }
 

@@ -125,7 +125,7 @@
               v-if="task.dependency_blocked"
               type="warning"
               :closable="false"
-              title="上游依赖工单未完成，暂不能开始 AI 修改"
+              title="上游依赖工单 AI Review 未通过，暂不能开始 AI 修改"
             >
               <template #default>
                 <div class="dependency-list">
@@ -283,7 +283,9 @@
                 :closable="false"
                 :type="task.status === 'review_passed' ? 'warning' : 'success'"
                 :title="task.status === 'review_passed'
-                  ? '自动检查通过,请打开 git diff 核对后确认放行或驳回'
+                  ? (hasReviewFixables
+                    ? '自动检查通过,但 Review 仍有待处理问题,可直接继续修改或人工确认后驳回'
+                    : '自动检查通过,请打开 git diff 核对后确认放行或驳回')
                   : '人工 Review 已通过,可在下方提交;如需反悔可填写意见驳回'"
               />
               <el-input
@@ -306,7 +308,7 @@
                 </el-button>
               </div>
             </div>
-            <div v-if="['review_failed', 'code_changed'].includes(task.status)" style="display: grid; gap: 8px">
+            <div v-if="showFixPanel" style="display: grid; gap: 8px">
               <el-input
                 v-model="fixFeedback"
                 type="textarea"
@@ -315,14 +317,21 @@
               />
               <div class="toolbar">
                 <ModelPicker v-model="fixModel" step="fix" />
-                <el-button type="warning" :disabled="!fixFeedback.trim()" @click="fix">
+                <el-button type="warning" :disabled="!canStartFix" @click="fix">
                   继续修改(fix 轮次)
                 </el-button>
-                <el-button plain :disabled="!fixFeedback.trim()" @click="fix(true)">
+                <el-button plain :disabled="!canStartFix" @click="fix(true)">
                   编辑提示语
                 </el-button>
               </div>
             </div>
+            <AiRunPanel
+              v-if="latestFixRun"
+              style="margin-top: 8px"
+              :run="latestFixRun"
+              @refresh="load"
+              @retried="load"
+            />
           </div>
         </div>
 
@@ -468,9 +477,20 @@
             </div>
           </div>
           <div v-if="task.has_multi_project_breakdown || task.spec_markdown || specRunning" class="side-item">
-            <div class="metric-label">本项目需求文档</div>
+            <div class="side-item__head">
+              <div class="metric-label">本项目需求文档</div>
+              <el-button
+                v-if="task.has_multi_project_breakdown"
+                size="small"
+                plain
+                :loading="specGenerating || specRunning"
+                @click="generateSpec"
+              >
+                {{ task.spec_markdown ? '重新生成' : '生成' }}
+              </el-button>
+            </div>
             <div v-if="specRunning" class="muted" style="font-size: 12px">
-              历史生成任务进行中,完成后自动刷新。
+              生成任务进行中,完成后自动刷新。
             </div>
             <el-collapse v-else-if="task.spec_markdown">
               <el-collapse-item title="查看本项目需求文档">
@@ -478,7 +498,7 @@
               </el-collapse-item>
             </el-collapse>
             <div v-else class="muted" style="font-size: 12px">
-              未随当前拆解生成,请回需求页重新拆解需求；完成后会自动同步到工单。
+              未生成本项目需求文档；可以直接在这里生成。
             </div>
           </div>
           <div class="side-item">
@@ -547,6 +567,7 @@ const reviewing = ref(false)
 const aiReviewing = ref(false)
 const committing = ref(false)
 const cleaningWorktree = ref(false)
+const specGenerating = ref(false)
 
 let detailTimer = null
 
@@ -556,8 +577,8 @@ const stepByStatus = {
   plan_generated: 1,
   plan_confirmed: 2,
   coding: 2,
-  fixing: 2,
   failed: 2,
+  fixing: 3,
   code_changed: 3,
   reviewing: 3,
   review_passed: 3,
@@ -569,7 +590,15 @@ const stepByStatus = {
   terminated: 1,
 }
 
-const currentStep = computed(() => (task.value ? stepByStatus[task.value.status] || 1 : 1))
+const currentStep = computed(() => {
+  if (!task.value) return 1
+  const status = task.value.status
+  if (status === 'failed') {
+    const lastCodeRun = task.value.runs?.find((run) => ['coding', 'fix'].includes(run.run_type))
+    if (lastCodeRun?.run_type === 'fix') return 3
+  }
+  return stepByStatus[status] || 1
+})
 const latestPlan = computed(() => (task.value?.plans?.length ? task.value.plans[task.value.plans.length - 1] : null))
 const planLocked = computed(() =>
   task.value ? !['created', 'branch_generated', 'plan_generated'].includes(task.value.status) : true,
@@ -597,12 +626,37 @@ const reviewGroups = computed(() => ({
   warnings: { label: '风险提示', items: reviewResult.value?.warnings || [] },
   suggestions: { label: '建议优化', items: reviewResult.value?.suggestions || [] },
 }))
+const hasReviewFixables = computed(() => reviewFeedbackHasContent(parseReviewFeedback(findReviewResultForFix(task.value?.reviews))))
+const showFixPanel = computed(() => {
+  const status = task.value?.status
+  if (['review_failed', 'code_changed'].includes(status)) return true
+  if (status === 'failed') {
+    const lastCodeRun = task.value?.runs?.find((run) => ['coding', 'fix'].includes(run.run_type))
+    if (lastCodeRun?.run_type === 'fix') return true
+  }
+  return status === 'review_passed' && hasReviewFixables.value
+})
+const canStartFix = computed(() => Boolean(fixFeedback.value.trim()) || hasReviewFixables.value)
 const runningRun = computed(() =>
   task.value?.runs?.find((run) => ['coding', 'fix'].includes(run.run_type) && ['running', 'queued'].includes(run.status)),
 )
-const latestCodeRun = computed(() =>
-  runningRun.value || task.value?.runs?.find((run) => ['coding', 'fix'].includes(run.run_type)) || null,
-)
+const latestCodeRun = computed(() => {
+  if (runningRun.value?.run_type === 'coding') return runningRun.value
+  const codingRunning = task.value?.runs?.find(
+    (run) => run.run_type === 'coding' && ['running', 'queued'].includes(run.status),
+  )
+  if (codingRunning) return codingRunning
+  return task.value?.runs?.find((run) => run.run_type === 'coding') || null
+})
+const latestFixRun = computed(() => {
+  const runs = (task.value?.runs || []).filter((run) => run.run_type === 'fix')
+  if (!runs.length) return null
+  const running = runs.find((run) => ['queued', 'running'].includes(run.status))
+  if (running) return running
+  const recent = runs.find((run) => run.status !== 'draft')
+  if (recent) return recent
+  return runs.find((run) => run.status === 'draft') || null
+})
 const runningBranchRun = computed(() =>
   task.value?.runs?.find((run) => run.run_type === 'branch_name' && ['running', 'queued'].includes(run.status)),
 )
@@ -638,8 +692,14 @@ const activeAnyRun = computed(() =>
   task.value?.runs?.find((run) => ['running', 'queued'].includes(run.status)),
 )
 const runHint = computed(() => {
+  if (runningRun.value?.run_type === 'fix') {
+    if (runningRun.value.status === 'queued') return 'fix 已入队,等待 Worker'
+    if (runningRun.value.status === 'running') return 'fix 执行中,实时日志'
+    return '继续修改(fix 轮次)'
+  }
   if (runningRun.value?.status === 'queued') return '已入队,等待 Worker'
   if (runningRun.value?.status === 'running') return '执行中,实时日志'
+  if (task.value?.status === 'fixing') return '继续修改(fix 轮次)'
   return 'Claude Code 修改代码'
 })
 const canTerminateTask = computed(() => task.value && canTerminate(task.value.status))
@@ -668,6 +728,65 @@ function formatTime(value) {
   return new Date(value.replace(' ', 'T')).toLocaleString('zh-CN', { hour12: false })
 }
 
+function parseReviewFeedback(text) {
+  if (!text || typeof text !== 'string') return null
+  try {
+    return JSON.parse(text)
+  } catch (error) {
+    return null
+  }
+}
+
+function reviewFeedbackHasContent(data) {
+  if (!data || typeof data !== 'object') return false
+  return Boolean(
+    (data.summary && String(data.summary).trim())
+    || (Array.isArray(data.blocking_issues) && data.blocking_issues.length)
+    || (Array.isArray(data.warnings) && data.warnings.length)
+    || (Array.isArray(data.suggestions) && data.suggestions.length),
+  )
+}
+
+function isShellHumanReject(parsed) {
+  if (!parsed || parsed.status !== 'human_reject') return false
+  if ((parsed.warnings?.length || 0) > 0 || (parsed.suggestions?.length || 0) > 0) return false
+  const blocking = parsed.blocking_issues || []
+  if (blocking.length > 1) return false
+  return parsed.summary === '人工 Review 驳回。'
+}
+
+function findReviewResultForFix(reviews) {
+  for (const review of reviews || []) {
+    if (review.status === 'human_pass') continue
+    const parsed = parseReviewFeedback(review.review_result)
+    if (!reviewFeedbackHasContent(parsed)) continue
+    if (review.status === 'human_reject' || review.status === 'fail') {
+      return review.review_result
+    }
+    if (review.status === 'pass') {
+      const hasFixables = (parsed.blocking_issues?.length || 0) > 0
+        || (parsed.warnings?.length || 0) > 0
+        || (parsed.suggestions?.length || 0) > 0
+      if (hasFixables) return review.review_result
+    }
+  }
+  return null
+}
+
+function syncFixFeedbackFromReview() {
+  const status = task.value?.status
+  if (!['review_failed', 'code_changed', 'review_passed'].includes(status)) return
+  const feedback = findReviewResultForFix(task.value?.reviews)
+  if (!feedback) return
+  const latestParsed = parseReviewFeedback(feedback)
+  const currentParsed = parseReviewFeedback(fixFeedback.value)
+  const latestHasContent = reviewFeedbackHasContent(latestParsed)
+  const currentHasContent = reviewFeedbackHasContent(currentParsed) || (fixFeedback.value.trim() && !currentParsed)
+  if (!fixFeedback.value.trim() || (!currentHasContent && latestHasContent) || isShellHumanReject(currentParsed)) {
+    fixFeedback.value = feedback
+  }
+}
+
 async function load({ silent = false } = {}) {
   task.value = await api.tasks.detail(props.id, { silent })
   branchEditor.value = task.value.final_branch_name || ''
@@ -681,6 +800,7 @@ async function load({ silent = false } = {}) {
     lastTaskCommitMessage.value = task.value.commit_message
   }
   if (task.value.retrospective && !retroEditor.value) retroEditor.value = task.value.retrospective.content
+  syncFixFeedbackFromReview()
   syncTimers()
 }
 
@@ -724,6 +844,17 @@ async function generatePlan(draft = false) {
     ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '计划生成任务已入队')
   } finally {
     planning.value = false
+  }
+}
+
+async function generateSpec() {
+  specGenerating.value = true
+  try {
+    await api.tasks.generateSpec(props.id)
+    await load()
+    ElMessage.success('本项目需求文档生成任务已入队')
+  } finally {
+    specGenerating.value = false
   }
 }
 
@@ -784,7 +915,12 @@ async function fix(draft = false) {
   await api.tasks.fix(props.id, fixFeedback.value, fixModel.value, draft === true)
   fixFeedback.value = ''
   await load()
-  if (draft === true) ElMessage.success('已生成草稿，请在弹窗中编辑提示语后执行')
+  if (draft === true) {
+    ElMessage.success('已生成草稿，请在弹窗中编辑提示语后执行')
+    return
+  }
+  // fix 轮次留在 Step 3,确保面板挂载并能自动弹出日志
+  openSteps.value = new Set([...openSteps.value, 3])
 }
 
 async function approveReview() {
@@ -803,7 +939,6 @@ async function approveReview() {
 
 async function rejectReview() {
   await api.tasks.rejectReview(props.id, rejectFeedback.value)
-  fixFeedback.value = rejectFeedback.value
   rejectFeedback.value = ''
   await load()
   ElMessage.warning('已驳回,可在下方发起 fix 轮次让 AI 继续修改')
@@ -870,6 +1005,14 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 4px;
   font-size: 12.5px;
+}
+
+.side-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
 }
 
 @media (max-width: 720px) {

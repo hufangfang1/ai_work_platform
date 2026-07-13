@@ -21,42 +21,48 @@ class ClaudeCliService
             $cmd .= ' --allowedTools ' . escapeshellarg($options['allowed_tools']);
         }
 
-        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-        $process = proc_open($cmd, $descriptors, $pipes, $cwd);
-        if (!is_resource($process)) {
-            throw new \RuntimeException('claude 子进程启动失败');
-        }
-        fwrite($pipes[0], $prompt);
-        fclose($pipes[0]);
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
+        $tempService = new ProcessTempService();
+        $tempDir = $tempService->create($cwd, 'claude-cli');
+        try {
+            $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+            $process = proc_open($cmd, $descriptors, $pipes, $cwd, $tempService->env(null, $tempDir));
+            if (!is_resource($process)) {
+                throw new \RuntimeException('claude 子进程启动失败');
+            }
+            fwrite($pipes[0], $prompt);
+            fclose($pipes[0]);
+            stream_set_blocking($pipes[1], false);
+            stream_set_blocking($pipes[2], false);
 
-        $output = '';
-        $error = '';
-        $exitCode = -1;
-        $startedAt = time();
-        while (true) {
+            $output = '';
+            $error = '';
+            $exitCode = -1;
+            $startedAt = time();
+            while (true) {
+                $output .= (string) stream_get_contents($pipes[1]);
+                $error .= (string) stream_get_contents($pipes[2]);
+                $status = proc_get_status($process);
+                if (!$status['running']) {
+                    // 退出码必须在此刻从 proc_get_status 读取:一旦进程被 waitpid 回收,
+                    // 后续 proc_close() 只会返回 -1,不能用它判断成败。
+                    $exitCode = $status['exitcode'];
+                    break;
+                }
+                if (time() - $startedAt > $timeout) {
+                    proc_terminate($process);
+                    proc_close($process);
+                    throw new \RuntimeException('claude 调用超时(' . $timeout . 's)');
+                }
+                usleep(200000);
+            }
             $output .= (string) stream_get_contents($pipes[1]);
             $error .= (string) stream_get_contents($pipes[2]);
-            $status = proc_get_status($process);
-            if (!$status['running']) {
-                // 退出码必须在此刻从 proc_get_status 读取:一旦进程被 waitpid 回收,
-                // 后续 proc_close() 只会返回 -1,不能用它判断成败。
-                $exitCode = $status['exitcode'];
-                break;
-            }
-            if (time() - $startedAt > $timeout) {
-                proc_terminate($process);
-                proc_close($process);
-                throw new \RuntimeException('claude 调用超时(' . $timeout . 's)');
-            }
-            usleep(200000);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            proc_close($process);
+        } finally {
+            $tempService->cleanup($tempDir);
         }
-        $output .= (string) stream_get_contents($pipes[1]);
-        $error .= (string) stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        proc_close($process);
 
         if ($exitCode !== 0 || trim($output) === '') {
             throw new \RuntimeException('claude 调用失败: ' . ($error !== '' ? trim($error) : '空输出(exit ' . $exitCode . ')'));

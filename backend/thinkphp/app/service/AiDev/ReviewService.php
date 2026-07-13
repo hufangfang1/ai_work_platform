@@ -89,8 +89,8 @@ class ReviewService
             'prompt' => $this->buildAiReviewPrompt($task, $plan, $change),
             'options' => [
                 'cwd' => $worktree,
-                'timeout' => 300,
-                'max_turns' => 12,
+                'timeout' => (int) config('ai_dev.agent.review_timeout', 900),
+                'max_turns' => 16,
                 'allowed_tools' => 'Read,Glob,Grep',
             ],
         ], 'task:' . (int) $taskId, $model, $draft);
@@ -106,6 +106,12 @@ class ReviewService
         $taskId = (int) $run['task_id'];
         $payload = json_decode((string) $run['input'], true);
         $result = $this->normalizeAiReviewResult($raw);
+        if ($result['status'] === 'fail' && !$result['blocking_issues']) {
+            $salvaged = (new GenerationExecutorService())->parseReviewResultFromRunLogs((int) $run['id']);
+            if ($salvaged) {
+                $result = $this->normalizeAiReviewResult($salvaged);
+            }
+        }
         $pass = $result['status'] === 'pass';
 
         $id = Db::name('ai_dev_reviews')->insertGetId([
@@ -119,6 +125,172 @@ class ReviewService
         ]);
         (new TaskService())->updateStatus($taskId, $pass ? 'review_passed' : 'review_failed');
         return Db::name('ai_dev_reviews')->where('id', $id)->find();
+    }
+
+    /** fix 轮次取最新有效 Review 反馈;用户输入为空或仅有空壳 JSON 时从 ai_review 日志兜底。 */
+    public function effectiveReviewFeedbackForFix($taskId, $userFeedback = '')
+    {
+        $userFeedback = trim((string) $userFeedback);
+        $effective = $this->latestEffectiveReviewResult((int) $taskId);
+        if ($userFeedback === '') {
+            return $effective ? json_encode($effective, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) : '';
+        }
+        $parsed = json_decode($userFeedback, true);
+        if (!is_array($parsed)) {
+            if ($effective) {
+                return json_encode($this->appendSupplementFeedback($effective, $userFeedback), JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+            }
+            return $userFeedback;
+        }
+        $normalized = $this->normalizeAiReviewResult($parsed);
+        if ($this->resultHasContent($normalized) && !$this->isShellHumanReject($normalized)) {
+            return $userFeedback;
+        }
+        if ($effective) {
+            return json_encode($effective, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        }
+        return $userFeedback;
+    }
+
+    /** 返回 fix 轮次应使用的 Review 结论(跳过 human_pass,空壳 human_reject 会合并上一次 AI/自动 Review)。 */
+    public function latestEffectiveReviewResult($taskId)
+    {
+        $reviews = Db::name('ai_dev_reviews')->where('task_id', $taskId)->order('id', 'desc')->select()->toArray();
+        foreach ($reviews as $review) {
+            if ($review['status'] === 'human_pass') {
+                continue;
+            }
+            $parsed = json_decode((string) $review['review_result'], true);
+            if (!is_array($parsed)) {
+                continue;
+            }
+            $normalized = $this->normalizeAiReviewResult($parsed);
+            if ($review['status'] === 'human_reject') {
+                $normalized['status'] = 'human_reject';
+            }
+            if (!$this->resultHasContent($normalized)) {
+                continue;
+            }
+            if ($review['status'] === 'human_reject' && $this->isShellHumanReject($normalized)) {
+                $actionable = $this->latestActionableReviewResult($taskId);
+                if ($actionable) {
+                    return $this->mergeRejectFeedback($actionable, $normalized);
+                }
+            }
+            return $normalized;
+        }
+        $run = Db::name('ai_dev_runs')
+            ->where('task_id', $taskId)
+            ->where('run_type', 'ai_review')
+            ->where('status', 'succeeded')
+            ->order('id', 'desc')
+            ->find();
+        if (!$run) {
+            return null;
+        }
+        $salvaged = (new GenerationExecutorService())->parseReviewResultFromRunLogs((int) $run['id']);
+        return $salvaged ? $this->normalizeAiReviewResult($salvaged) : null;
+    }
+
+    /** 最近一次 AI/自动 Review(不含人工通过/驳回记录)。 */
+    public function latestActionableReviewResult($taskId)
+    {
+        $reviews = Db::name('ai_dev_reviews')->where('task_id', $taskId)->order('id', 'desc')->select()->toArray();
+        foreach ($reviews as $review) {
+            if ($this->isHumanReviewStatus($review['status'])) {
+                continue;
+            }
+            $parsed = json_decode((string) $review['review_result'], true);
+            if (!is_array($parsed)) {
+                continue;
+            }
+            $normalized = $this->normalizeAiReviewResult($parsed);
+            if ($this->resultHasContent($normalized)) {
+                return $normalized;
+            }
+        }
+        $run = Db::name('ai_dev_runs')
+            ->where('task_id', $taskId)
+            ->where('run_type', 'ai_review')
+            ->where('status', 'succeeded')
+            ->order('id', 'desc')
+            ->find();
+        if (!$run) {
+            return null;
+        }
+        $salvaged = (new GenerationExecutorService())->parseReviewResultFromRunLogs((int) $run['id']);
+        return $salvaged ? $this->normalizeAiReviewResult($salvaged) : null;
+    }
+
+    private function isHumanReviewStatus($status)
+    {
+        return in_array($status, ['human_pass', 'human_reject'], true);
+    }
+
+    private function isShellHumanReject(array $result)
+    {
+        if (($result['status'] ?? '') !== 'human_reject') {
+            return false;
+        }
+        if (!empty($result['warnings']) || !empty($result['suggestions'])) {
+            return false;
+        }
+        $blocking = $result['blocking_issues'] ?? [];
+        if (count($blocking) > 1) {
+            return false;
+        }
+        if (count($blocking) === 1 && mb_strlen((string) $blocking[0]) >= 30) {
+            return false;
+        }
+        return trim((string) ($result['summary'] ?? '')) === '人工 Review 驳回。' || count($blocking) <= 1;
+    }
+
+    private function mergeRejectFeedback(array $previous, array $humanReject, $humanFeedback = '')
+    {
+        $merged = $previous;
+        $merged['status'] = 'human_reject';
+        $merged['risk_level'] = 'high';
+        $humanNote = trim((string) $humanFeedback);
+        if ($humanNote === '') {
+            $humanNote = trim((string) ($humanReject['human_feedback'] ?? ''));
+        }
+        if ($humanNote === '' && !empty($humanReject['blocking_issues'])) {
+            $humanNote = trim((string) $humanReject['blocking_issues'][0]);
+        }
+        $merged['summary'] = '人工 Review 驳回。';
+        if (trim((string) ($previous['summary'] ?? '')) !== '') {
+            $merged['summary'] .= ' 原 Review：' . $previous['summary'];
+        }
+        if ($humanNote !== '') {
+            $blocking = $merged['blocking_issues'] ?? [];
+            array_unshift($blocking, '【人工意见】' . $humanNote);
+            $merged['blocking_issues'] = array_values(array_unique($blocking));
+            $merged['human_feedback'] = $humanNote;
+        }
+        return $merged;
+    }
+
+    private function appendSupplementFeedback(array $result, $supplement)
+    {
+        $supplement = trim((string) $supplement);
+        if ($supplement === '') {
+            return $result;
+        }
+        $note = '【补充意见】' . $supplement;
+        $blocking = $result['blocking_issues'] ?? [];
+        if (!in_array($note, $blocking, true)) {
+            array_unshift($blocking, $note);
+        }
+        $result['blocking_issues'] = $blocking;
+        return $result;
+    }
+
+    private function resultHasContent(array $result)
+    {
+        return trim((string) ($result['summary'] ?? '')) !== ''
+            || !empty($result['blocking_issues'])
+            || !empty($result['warnings'])
+            || !empty($result['suggestions']);
     }
 
     private function assertNoRunningAiReview($taskId)
@@ -171,16 +343,24 @@ class ReviewService
             throw new \RuntimeException('驳回必须填写意见');
         }
         $change = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('created_at', 'desc')->find();
+        $previous = $this->latestActionableReviewResult($taskId);
+        $merged = $previous
+            ? $this->mergeRejectFeedback($previous, [], trim($feedback))
+            : [
+                'status' => 'human_reject',
+                'risk_level' => 'high',
+                'summary' => '人工 Review 驳回。',
+                'blocking_issues' => [trim($feedback)],
+                'warnings' => [],
+                'suggestions' => [],
+                'human_feedback' => trim($feedback),
+            ];
         Db::name('ai_dev_reviews')->insert([
             'task_id' => $taskId,
             'run_id' => $change ? $change['run_id'] : 0,
             'status' => 'human_reject',
             'risk_level' => 'high',
-            'review_result' => json_encode([
-                'status' => 'human_reject',
-                'summary' => '人工 Review 驳回。',
-                'blocking_issues' => [trim($feedback)],
-            ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
+            'review_result' => json_encode($merged, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
             'test_result' => '',
             'created_at' => date('Y-m-d H:i:s'),
         ]);
@@ -202,7 +382,7 @@ class ReviewService
             }
             $checked[] = $project[$field];
             $output = [];
-            exec('cd ' . escapeshellarg($worktree) . ' && ' . $project[$field] . ' 2>&1', $output, $code);
+            (new ProcessTempService())->exec($worktree, $project[$field], $output, $code, 'review-check');
             $parts[] = "命令：{$project[$field]}\n退出码：{$code}\n" . implode("\n", $output);
             if ($code !== 0) {
                 $failed[] = $project[$field];

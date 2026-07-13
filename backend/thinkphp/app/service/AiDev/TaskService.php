@@ -6,7 +6,14 @@ use think\facade\Db;
 
 class TaskService
 {
-    const DEPENDENCY_READY_STATUSES = ['committed', 'retrospected'];
+    /** 上游依赖满足后即可开始本工单 AI 编码(自动 Review 通过即可,不要求已提交)。 */
+    const DEPENDENCY_READY_STATUSES = [
+        'review_passed',
+        'ready_to_commit',
+        'committing',
+        'committed',
+        'retrospected',
+    ];
 
     public function query(array $filters)
     {
@@ -62,6 +69,103 @@ class TaskService
             return "## 跨项目接口契约\n\n" . trim($m[1]) . "\n";
         }
         return $content;
+    }
+
+    /**
+     * 生成计划时注入依赖项目的开发计划(优先已确认版本),供前端/下游消费上游接口契约。
+     */
+    public function dependencyPlansContext(array $task)
+    {
+        $withDependencies = $this->attachDependenciesToTasks([$task], (int) $task['requirement_id']);
+        $task = $withDependencies ? $withDependencies[0] : $task;
+        $dependencies = isset($task['dependencies']) && is_array($task['dependencies']) ? $task['dependencies'] : [];
+        if (!$dependencies) {
+            return '';
+        }
+
+        $sections = ["# 依赖项目开发计划(供接口消费参考)\n"];
+        if (!empty($task['dependency_reason'])) {
+            $sections[] = '本项目依赖说明: ' . trim((string) $task['dependency_reason']) . "\n";
+        }
+        $hasPlan = false;
+        foreach ($dependencies as $dependency) {
+            $dependencyTaskId = (int) (isset($dependency['task_id']) ? $dependency['task_id'] : 0);
+            $projectName = isset($dependency['project_name']) ? trim((string) $dependency['project_name']) : '';
+            if ($dependencyTaskId <= 0) {
+                $sections[] = "## {$projectName}\n"
+                    . "状态: 未找到对应工单,暂无可引用的开发计划。请先在需求下为该项目生成工单与计划。\n";
+                continue;
+            }
+
+            $confirmedPlan = Db::name('ai_dev_plans')
+                ->where('task_id', $dependencyTaskId)
+                ->whereNotNull('confirmed_at')
+                ->order('version', 'desc')
+                ->find();
+            $latestPlan = Db::name('ai_dev_plans')
+                ->where('task_id', $dependencyTaskId)
+                ->order('version', 'desc')
+                ->find();
+            $plan = $confirmedPlan ?: $latestPlan;
+            if (!$plan || trim((string) $plan['plan_content']) === '') {
+                $status = isset($dependency['status']) ? (string) $dependency['status'] : 'unknown';
+                $sections[] = "## {$projectName}\n"
+                    . "状态: {$status},尚未生成开发计划。前端接口消费只能暂依共享接口契约,待该项目计划确认后应重新生成本项目计划。\n";
+                continue;
+            }
+
+            $hasPlan = true;
+            $planLabel = $confirmedPlan
+                ? '已确认开发计划 v' . (int) $confirmedPlan['version']
+                : '最新计划草案 v' . (int) $plan['version'] . '(尚未确认,仅供参考)';
+            $planContent = trim((string) $plan['plan_content']);
+            $apiContract = $this->extractPlanSection($planContent, '接口契约');
+            $sections[] = "## {$projectName} · {$planLabel}\n"
+                . ($apiContract !== ''
+                    ? "### 接口契约(摘自依赖项目开发计划)\n" . $apiContract . "\n"
+                    : "### 开发计划全文(依赖项目未单独拆分接口契约章节)\n" . $planContent . "\n");
+        }
+
+        if (!$hasPlan) {
+            $sections[] = "\n> 提示: 当前依赖项目都还没有可引用的开发计划。若本项目需要消费上游 API,请优先生成并确认依赖项目的开发计划,再重新生成本项目计划。\n";
+        }
+        return implode("\n", $sections) . "\n";
+    }
+
+    private function extractPlanSection($content, $heading)
+    {
+        $content = trim((string) $content);
+        $heading = trim((string) $heading);
+        if ($content === '' || $heading === '') {
+            return '';
+        }
+        $pattern = '/^##\s*' . preg_quote($heading, '/') . '\s*\R([\s\S]*?)(?=^##\s|\z)/m';
+        if (!preg_match($pattern, $content, $matches)) {
+            return '';
+        }
+        return trim((string) $matches[1]);
+    }
+
+    /**
+     * 从本项目需求文档中提取页面布局章节,供前端开发计划生成时强制保留。
+     */
+    public function specLayoutContext(array $task)
+    {
+        $spec = isset($task['spec_markdown']) ? trim((string) $task['spec_markdown']) : '';
+        if ($spec === '') {
+            return '';
+        }
+        $sections = ['页面布局与区域规格', 'PC 端布局', 'H5 端布局', '筛选、列表与详情交互'];
+        $parts = ["# 本项目需求文档·页面布局(生成计划时必须原样展开为独立章节,不得省略)\n"];
+        $hasSection = false;
+        foreach ($sections as $heading) {
+            $body = $this->extractPlanSection($spec, $heading);
+            if ($body !== '') {
+                $hasSection = true;
+                $parts[] = "## {$heading}\n" . $body . "\n";
+            }
+        }
+        return $hasSection ? implode("\n", $parts) . "\n" : '';
     }
 
     /**
@@ -136,6 +240,7 @@ class TaskService
         $task['runs'] = Db::name('ai_dev_runs')->where('task_id', $id)->order('created_at', 'desc')->select()->toArray();
         $task['changes'] = Db::name('ai_dev_changes')->where('task_id', $id)->order('created_at', 'desc')->select()->toArray();
         $task['reviews'] = Db::name('ai_dev_reviews')->where('task_id', $id)->order('created_at', 'desc')->select()->toArray();
+        $task['reviews'] = $this->enrichReviewResults((int) $id, $task['reviews']);
         $task['retrospective'] = Db::name('ai_dev_retrospectives')->where('task_id', $id)->order('created_at', 'desc')->find();
         $task['has_multi_project_breakdown'] = $this->hasMultiProjectBreakdown($task);
         $withDependencies = $this->attachDependenciesToTasks([$task], (int) $task['requirement_id']);
@@ -143,7 +248,68 @@ class TaskService
         return $task;
     }
 
-    private function hasMultiProjectBreakdown(array $task)
+    private function enrichReviewResults($taskId, array $reviews)
+    {
+        if (!$reviews) {
+            return $reviews;
+        }
+        $reviewService = new ReviewService();
+        $salvaged = null;
+        foreach ($reviews as $index => $review) {
+            $parsed = json_decode((string) $review['review_result'], true);
+            if (!is_array($parsed)) {
+                continue;
+            }
+            $normalized = [
+                'source' => $parsed['source'] ?? 'ai_review',
+                'status' => $parsed['status'] ?? $review['status'],
+                'risk_level' => $parsed['risk_level'] ?? $review['risk_level'],
+                'summary' => $parsed['summary'] ?? '',
+                'blocking_issues' => isset($parsed['blocking_issues']) && is_array($parsed['blocking_issues']) ? $parsed['blocking_issues'] : [],
+                'warnings' => isset($parsed['warnings']) && is_array($parsed['warnings']) ? $parsed['warnings'] : [],
+                'suggestions' => isset($parsed['suggestions']) && is_array($parsed['suggestions']) ? $parsed['suggestions'] : [],
+            ];
+            $hasContent = trim((string) $normalized['summary']) !== ''
+                || $normalized['blocking_issues']
+                || $normalized['warnings']
+                || $normalized['suggestions'];
+            // 空壳 human_reject 合并上一次 AI/自动 Review,并回写库内记录
+            if ($review['status'] === 'human_reject' && $index === 0) {
+                $effective = $reviewService->latestEffectiveReviewResult($taskId);
+                if ($effective) {
+                    $json = json_encode($effective, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+                    if ($json !== (string) $review['review_result']) {
+                        $reviews[$index]['review_result'] = $json;
+                        Db::name('ai_dev_reviews')->where('id', $review['id'])->update([
+                            'review_result' => $json,
+                            'risk_level' => $effective['risk_level'] ?? $review['risk_level'],
+                        ]);
+                    }
+                    continue;
+                }
+            }
+            if ($hasContent) {
+                continue;
+            }
+            if ($salvaged === null) {
+                $salvaged = $reviewService->latestEffectiveReviewResult($taskId);
+            }
+            if (!$salvaged) {
+                continue;
+            }
+            $json = json_encode($salvaged, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+            $reviews[$index]['review_result'] = $json;
+            if ($index === 0) {
+                Db::name('ai_dev_reviews')->where('id', $review['id'])->update([
+                    'review_result' => $json,
+                    'risk_level' => $salvaged['risk_level'],
+                ]);
+            }
+        }
+        return $reviews;
+    }
+
+    public function hasMultiProjectBreakdown(array $task)
     {
         $breakdown = Db::name('ai_dev_breakdowns')
             ->where('requirement_id', (int) $task['requirement_id'])

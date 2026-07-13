@@ -64,6 +64,7 @@ export const api = {
       request('POST', `/tasks/${id}/generate-branch`, { model, draft: draft ? 1 : 0 }),
     checkBranch: (id, finalBranchName) =>
       request('POST', `/tasks/${id}/check-branch`, { final_branch_name: finalBranchName }),
+    generateSpec: (id, model = '') => request('POST', `/tasks/${id}/generate-spec`, { model }),
     generatePlan: (id, model = '', draft = false) =>
       request('POST', `/tasks/${id}/generate-plan`, { model, draft: draft ? 1 : 0 }),
     savePlan: (id, planContent) => request('PUT', `/tasks/${id}/plan`, { plan_content: planContent }),
