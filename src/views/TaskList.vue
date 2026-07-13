@@ -2,8 +2,8 @@
   <section class="page">
     <div class="page-heading">
       <div>
-        <h1>工单</h1>
-        <p>工单由需求拆解生成,跟踪 计划、执行、Review、提交 与复盘状态。</p>
+        <h1>开发任务</h1>
+        <p>开发任务由需求拆解生成，跟踪开发计划、代码实现、代码审查与代码提交；项目复盘统一在需求详情页完成。</p>
       </div>
     </div>
 
@@ -50,7 +50,7 @@
 
     <div class="panel" v-loading="loading">
       <el-table v-if="tasks.length" :data="tasks">
-        <el-table-column label="工单标题" min-width="220">
+        <el-table-column label="任务标题" min-width="220">
           <template #default="{ row }">
             <el-link type="primary" @click="$router.push(`/tasks/${row.id}`)">
               {{ row.title }}
@@ -87,7 +87,7 @@
           <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
         </el-table-column>
       </el-table>
-      <div v-else-if="!loading" class="empty-state">暂无工单,请先在需求页完成拆解</div>
+      <div v-else-if="!loading" class="empty-state">暂无开发任务，请先在需求页完成拆解</div>
     </div>
   </section>
 </template>

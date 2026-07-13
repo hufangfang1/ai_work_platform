@@ -7,7 +7,9 @@
         <span :class="statusClass(run.status)">{{ statusLabel(run.status) }}</span>
       </div>
       <div class="toolbar">
-        <el-button size="small" plain @click="openLogs">{{ isDraft ? '编辑提示语' : '查看日志' }}</el-button>
+        <el-button v-if="!isDraft || !hideDraftOpenButton" size="small" plain @click="openLogs">
+          {{ isDraft ? '编辑提示语' : '查看日志' }}
+        </el-button>
         <el-button v-if="isRunning" size="small" type="danger" plain @click="cancel">取消</el-button>
         <el-button v-else-if="canRetry" size="small" plain @click="retry">重试</el-button>
       </div>
@@ -103,8 +105,8 @@
       <template #footer>
         <div class="ai-run-panel__footer">
           <template v-if="isDraft">
-            <el-button plain :disabled="executing" @click="discardDraft">放弃</el-button>
-            <el-button type="primary" :loading="executing" @click="saveAndExecute">执行</el-button>
+            <el-button plain :disabled="saving" @click="dialogVisible = false">取消</el-button>
+            <el-button type="primary" :loading="saving" @click="saveDraft">确定</el-button>
           </template>
           <template v-else>
             <el-button @click="dialogVisible = false">关闭</el-button>
@@ -125,6 +127,8 @@ import MarkdownView from './MarkdownView.vue'
 
 const props = defineProps({
   run: { type: Object, default: null },
+  // 页面已有统一的“编辑提示语”入口时，草稿行不再重复显示同名按钮。
+  hideDraftOpenButton: { type: Boolean, default: false },
   // 传入则重试时改用该模型档案(如需求拆解按当前下拉框选择重试);不传则沿用原 run 的模型。
   retryModel: { type: String, default: undefined },
 })
@@ -133,19 +137,15 @@ const emit = defineEmits(['refresh', 'retried'])
 const logLines = ref([])
 const logBox = ref(null)
 const dialogVisible = ref(false)
-const autoOpenedRunId = ref(null)
 const draftPrompt = ref('')
 const draftPreview = ref(false)
-const executing = ref(false)
+const saving = ref(false)
 const expandedSeqs = ref(new Set())
 let logTimer = null
 
 const isRunning = computed(() => props.run && ['queued', 'running'].includes(props.run.status))
 const canRetry = computed(() => props.run && ['failed', 'cancelled'].includes(props.run.status))
 const isDraft = computed(() => props.run?.status === 'draft')
-const shouldAutoOpen = computed(
-  () => props.run && ['draft', 'queued', 'running', 'failed'].includes(props.run.status),
-)
 
 // run.input:编码/继续修改是纯文本 prompt;生成类是 {prompt,options} JSON,取其中的 prompt。
 function extractPrompt(input) {
@@ -189,30 +189,21 @@ function displayText(log) {
   return `${text.slice(0, DISPLAY_LIMIT)}…`
 }
 
-async function saveAndExecute() {
+async function saveDraft() {
   if (!props.run) return
-  executing.value = true
+  saving.value = true
   try {
-    // 只有真正改动过才回写,避免无谓写库。
     if (draftPrompt.value !== promptText.value) {
       await api.runs.updatePrompt(props.run.id, draftPrompt.value)
     }
-    const run = await api.runs.execute(props.run.id)
     dialogVisible.value = false
-    emit('retried', run)
     emit('refresh')
+    ElMessage.success('提示语草稿已保存，尚未执行')
   } catch (error) {
     /* request 已弹错误提示 */
   } finally {
-    executing.value = false
+    saving.value = false
   }
-}
-
-async function discardDraft() {
-  if (!props.run) return
-  await api.runs.discard(props.run.id)
-  dialogVisible.value = false
-  emit('refresh')
 }
 
 watch(
@@ -224,7 +215,6 @@ watch(
     draftPrompt.value = extractPrompt(props.run?.input)
     draftPreview.value = false
     syncPolling()
-    maybeAutoOpen()
   },
   { immediate: true },
 )
@@ -233,7 +223,6 @@ watch(
   () => props.run?.status,
   () => {
     syncPolling()
-    maybeAutoOpen()
   },
 )
 
@@ -477,11 +466,7 @@ function openLogs() {
   dialogVisible.value = true
 }
 
-function maybeAutoOpen() {
-  if (!props.run || !shouldAutoOpen.value || autoOpenedRunId.value === props.run.id) return
-  autoOpenedRunId.value = props.run.id
-  dialogVisible.value = true
-}
+defineExpose({ open: openLogs })
 
 function syncPolling() {
   if (logTimer) {

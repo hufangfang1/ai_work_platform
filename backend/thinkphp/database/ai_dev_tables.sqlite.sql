@@ -158,11 +158,15 @@ CREATE INDEX idx_review_status ON ai_dev_reviews (status);
 CREATE TABLE ai_dev_retrospectives (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id INTEGER NOT NULL DEFAULT 0,
+  requirement_id INTEGER NOT NULL DEFAULT 0,
   content TEXT,
+  project_summaries_json TEXT,
   created_by INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  updated_at TEXT
 );
 CREATE INDEX idx_retro_task_id ON ai_dev_retrospectives (task_id);
+CREATE INDEX idx_retro_requirement_id ON ai_dev_retrospectives (requirement_id);
 
 CREATE TABLE ai_dev_model_configs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

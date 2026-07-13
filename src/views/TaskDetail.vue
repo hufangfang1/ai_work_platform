@@ -13,11 +13,11 @@
       <div class="toolbar">
         <el-button @click="$router.push('/tasks')">
           <el-icon><Back /></el-icon>
-          工单列表
+          任务列表
         </el-button>
         <el-button v-if="canTerminateTask" type="danger" plain @click="terminateTask">
           <el-icon><CircleClose /></el-icon>
-          终止工单
+          终止任务
         </el-button>
       </div>
     </div>
@@ -25,16 +25,64 @@
     <div class="detail-layout">
       <!-- 主列:流程时间线 -->
       <div class="flow">
+        <el-tabs v-model="activeTaskTab" class="task-tabs" stretch>
+          <el-tab-pane
+            v-for="item in taskTabs"
+            :key="item.step"
+            :name="item.step"
+            :disabled="item.step > currentStep"
+          >
+            <template #label>
+              <span class="task-tab-label" :class="item.state">
+                <span class="task-tab-label__index">{{ item.step }}</span>
+                <span class="task-tab-label__text">
+                  <strong>{{ item.label }}</strong>
+                  <small>{{ item.hint }}</small>
+                </span>
+              </span>
+            </template>
+          </el-tab-pane>
+        </el-tabs>
+
         <!-- Step 1 分支与计划 -->
-        <div class="flow-step" :class="stepClass(1)">
-          <div class="flow-step__head" @click="toggleStep(1)">
-            <span class="flow-step__index">1</span>
-            <span class="flow-step__title">开发计划</span>
-            <span class="flow-step__hint">
-              {{ latestPlan ? `计划 v${latestPlan.version}` : '使用需求分支生成计划,人工确认后执行' }}
-            </span>
-          </div>
-          <div v-if="isOpen(1)" class="flow-step__body">
+        <div v-show="activeTaskTab === 1" class="flow-step task-tab-panel" :class="stepClass(1)">
+          <div class="flow-step__body">
+            <div class="task-context-grid">
+              <div class="task-context-card">
+                <div class="metric-label">本项目职责</div>
+                <div>{{ task.scope_summary || '未填写' }}</div>
+              </div>
+              <div v-if="task.has_multi_project_breakdown || task.spec_markdown || specRunning" class="task-context-card">
+                <div class="side-item__head">
+                  <div class="metric-label">本项目需求文档</div>
+                  <el-button
+                    v-if="task.has_multi_project_breakdown"
+                    size="small"
+                    plain
+                    :loading="specGenerating || specRunning"
+                    :disabled="!['created', 'branch_generated', 'plan_generated'].includes(task.status) || specRunning"
+                    @click="generateSpec"
+                  >
+                    {{ task.spec_markdown ? '重新生成' : '生成' }}
+                  </el-button>
+                </div>
+                <div v-if="specRunning" class="muted">生成任务进行中，完成后自动刷新。</div>
+                <el-collapse v-else-if="task.spec_markdown">
+                  <el-collapse-item title="查看本项目需求文档">
+                    <MarkdownView :source="task.spec_markdown" max-height="420px" />
+                  </el-collapse-item>
+                </el-collapse>
+                <div v-else class="muted">未生成本项目需求文档。</div>
+              </div>
+              <div class="task-context-card task-context-card--wide">
+                <div class="metric-label">原始需求快照 v{{ task.doc_version }}</div>
+                <el-collapse>
+                  <el-collapse-item title="需要核对原始需求时展开">
+                    <MarkdownView :source="task.doc_content" max-height="380px" />
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
+            </div>
             <div class="branch-inherited">
               <div>
                 <div class="metric-label">需求分支</div>
@@ -53,7 +101,7 @@
                 @click="generatePlan"
               >
                 <el-icon><MagicStick /></el-icon>
-                {{ latestPlan ? '重新生成计划' : 'AI 生成开发计划' }}
+                {{ latestPlanRun?.status === 'draft' ? '执行当前草稿' : (latestPlan ? '重新生成计划' : 'AI 生成开发计划') }}
               </el-button>
               <el-button
                 plain
@@ -74,8 +122,10 @@
             </div>
             <AiRunPanel
               v-if="latestPlanRun"
+              ref="planRunPanel"
               style="margin: 8px 0"
               :run="latestPlanRun"
+              hide-draft-open-button
               @refresh="load"
             />
             <div v-if="planRunning" class="empty-state">AI 计划生成任务已入队，可查看上方日志；完成后会自动刷新。</div>
@@ -114,18 +164,13 @@
         </div>
 
         <!-- Step 2 AI 执行 -->
-        <div class="flow-step" :class="stepClass(2)">
-          <div class="flow-step__head" @click="toggleStep(2)">
-            <span class="flow-step__index">2</span>
-            <span class="flow-step__title">AI 执行</span>
-            <span class="flow-step__hint">{{ runHint }}</span>
-          </div>
-          <div v-if="isOpen(2)" class="flow-step__body">
+        <div v-show="activeTaskTab === 2" class="flow-step task-tab-panel" :class="stepClass(2)">
+          <div class="flow-step__body">
             <el-alert
               v-if="task.dependency_blocked"
               type="warning"
               :closable="false"
-              title="上游依赖工单 AI Review 未通过，暂不能开始 AI 修改"
+              title="上游依赖任务的代码审查未通过，暂不能开始 AI 修改"
             >
               <template #default>
                 <div class="dependency-list">
@@ -148,7 +193,7 @@
                 @click="execute"
               >
                 <el-icon><VideoPlay /></el-icon>
-                开始 AI 修改
+                {{ latestCodeRun?.status === 'draft' ? '执行当前草稿' : '开始 AI 修改' }}
               </el-button>
               <el-button
                 plain
@@ -158,7 +203,14 @@
                 编辑提示语
               </el-button>
             </div>
-            <AiRunPanel v-if="latestCodeRun" :run="latestCodeRun" @refresh="load" @retried="load" />
+            <AiRunPanel
+              v-if="latestCodeRun"
+              ref="codeRunPanel"
+              :run="latestCodeRun"
+              hide-draft-open-button
+              @refresh="load"
+              @retried="load"
+            />
             <el-collapse v-if="task.runs.length">
               <el-collapse-item :title="`历史执行记录(${task.runs.length})`">
                 <el-table :data="task.runs" size="small">
@@ -180,17 +232,8 @@
         </div>
 
         <!-- Step 3 Review -->
-        <div class="flow-step" :class="stepClass(3)">
-          <div class="flow-step__head" @click="toggleStep(3)">
-            <span class="flow-step__index">3</span>
-            <span class="flow-step__title">Review</span>
-            <span class="flow-step__hint">
-              <template v-if="latestReview">结论:{{ latestReview.status }}</template>
-              <template v-else-if="latestChange">{{ changedFiles.length }} 个文件变更</template>
-              <template v-else>检查与结论</template>
-            </span>
-          </div>
-          <div v-if="isOpen(3)" class="flow-step__body">
+        <div v-show="activeTaskTab === 3" class="flow-step task-tab-panel" :class="stepClass(3)">
+          <div class="flow-step__body">
             <template v-if="latestChange">
               <el-collapse>
                 <el-collapse-item :title="`变更文件(${changedFiles.length})`">
@@ -237,7 +280,7 @@
                 :disabled="aiReviewRunning || !['code_changed', 'review_passed', 'review_failed'].includes(task.status)"
                 @click="aiReview"
               >
-                AI Review + 自动检查
+                {{ latestAiReviewRun?.status === 'draft' ? '执行当前草稿' : 'AI Review + 自动检查' }}
               </el-button>
               <el-button
                 plain
@@ -249,8 +292,10 @@
             </div>
             <AiRunPanel
               v-if="latestAiReviewRun"
+              ref="reviewRunPanel"
               style="margin-bottom: 8px"
               :run="latestAiReviewRun"
+              hide-draft-open-button
               @refresh="load"
             />
             <template v-if="reviewResult">
@@ -324,7 +369,7 @@
               <div class="toolbar">
                 <ModelPicker v-model="fixModel" step="fix" />
                 <el-button type="warning" :disabled="!canStartFix" @click="fix">
-                  继续修改(fix 轮次)
+                  {{ latestFixRun?.status === 'draft' ? '执行当前草稿' : '继续修改(fix 轮次)' }}
                 </el-button>
                 <el-button plain :disabled="!canStartFix" @click="fix(true)">
                   编辑提示语
@@ -333,8 +378,10 @@
             </div>
             <AiRunPanel
               v-if="latestFixRun"
+              ref="fixRunPanel"
               style="margin-top: 8px"
               :run="latestFixRun"
+              hide-draft-open-button
               @refresh="load"
               @retried="load"
             />
@@ -342,16 +389,8 @@
         </div>
 
         <!-- Step 4 提交 -->
-        <div class="flow-step" :class="stepClass(4)">
-          <div class="flow-step__head" @click="toggleStep(4)">
-            <span class="flow-step__index">4</span>
-            <span class="flow-step__title">提交</span>
-            <span class="flow-step__hint">
-              <span v-if="task.commit_hash" class="mono">{{ task.commit_hash.slice(0, 10) }}</span>
-              <template v-else>人工确认 git commit</template>
-            </span>
-          </div>
-          <div v-if="isOpen(4)" class="flow-step__body">
+        <div v-show="activeTaskTab === 4" class="flow-step task-tab-panel" :class="stepClass(4)">
+          <div class="flow-step__body">
             <div class="toolbar">
               <ModelPicker v-model="commitModel" step="commit_message" />
               <el-button
@@ -359,7 +398,7 @@
                 :disabled="task.status !== 'ready_to_commit' || commitMessageRunning"
                 @click="generateCommitMessage"
               >
-                生成 commit message
+                {{ latestCommitMessageRun?.status === 'draft' ? '执行当前草稿' : '生成 commit message' }}
               </el-button>
               <el-button
                 plain
@@ -379,8 +418,10 @@
             </div>
             <AiRunPanel
               v-if="latestCommitMessageRun"
+              ref="commitRunPanel"
               style="margin-bottom: 8px"
               :run="latestCommitMessageRun"
+              hide-draft-open-button
               @refresh="load"
             />
             <CodeEditor
@@ -396,30 +437,6 @@
           </div>
         </div>
 
-        <!-- Step 5 复盘 -->
-        <div class="flow-step" :class="stepClass(5)">
-          <div class="flow-step__head" @click="toggleStep(5)">
-            <span class="flow-step__index">5</span>
-            <span class="flow-step__title">复盘</span>
-            <span class="flow-step__hint">{{ task.retrospective ? '已生成' : '沉淀本次交付' }}</span>
-          </div>
-          <div v-if="isOpen(5)" class="flow-step__body">
-            <div class="toolbar">
-              <el-button :disabled="task.status !== 'committed' && !task.retrospective" @click="generateRetro">
-                生成复盘
-              </el-button>
-              <el-button type="primary" :disabled="!retroEditor.trim()" @click="saveRetro">保存复盘</el-button>
-            </div>
-            <div class="toolbar" style="justify-content: flex-end">
-              <el-radio-group v-model="retroPreview" size="small">
-                <el-radio-button :value="true">预览</el-radio-button>
-                <el-radio-button :value="false">编辑</el-radio-button>
-              </el-radio-group>
-            </div>
-            <MarkdownView v-if="retroPreview" :source="retroEditor" max-height="420px" />
-            <CodeEditor v-else v-model="retroEditor" label="复盘(Markdown)" language="markdown" :rows="14" />
-          </div>
-        </div>
       </div>
 
       <!-- 侧栏 -->
@@ -461,10 +478,6 @@
             </div>
             <div v-else class="muted">未占用</div>
           </div>
-          <div class="side-item">
-            <div class="metric-label">本项目职责</div>
-            <div style="font-size: 13px">{{ task.scope_summary || '未填写' }}</div>
-          </div>
           <div v-if="task.dependencies?.length || task.dependents?.length" class="side-item">
             <div class="metric-label">项目依赖</div>
             <div v-if="task.dependencies?.length" class="dependency-list">
@@ -481,40 +494,6 @@
                 被 {{ dependent.project_name || `project#${dependent.project_id}` }} 依赖
               </span>
             </div>
-          </div>
-          <div v-if="task.has_multi_project_breakdown || task.spec_markdown || specRunning" class="side-item">
-            <div class="side-item__head">
-              <div class="metric-label">本项目需求文档</div>
-              <el-button
-                v-if="task.has_multi_project_breakdown"
-                size="small"
-                plain
-                :loading="specGenerating || specRunning"
-                :disabled="!['created', 'branch_generated', 'plan_generated'].includes(task.status) || specRunning"
-                @click="generateSpec"
-              >
-                {{ task.spec_markdown ? '重新生成' : '生成' }}
-              </el-button>
-            </div>
-            <div v-if="specRunning" class="muted" style="font-size: 12px">
-              生成任务进行中,完成后自动刷新。
-            </div>
-            <el-collapse v-else-if="task.spec_markdown">
-              <el-collapse-item title="查看本项目需求文档">
-                <MarkdownView :source="task.spec_markdown" max-height="360px" />
-              </el-collapse-item>
-            </el-collapse>
-            <div v-else class="muted" style="font-size: 12px">
-              未生成本项目需求文档；可以直接在这里生成。
-            </div>
-          </div>
-          <div class="side-item">
-            <div class="metric-label">需求快照 v{{ task.doc_version }}</div>
-            <el-collapse>
-              <el-collapse-item title="查看需求文档">
-                <MarkdownView :source="task.doc_content" max-height="300px" />
-              </el-collapse-item>
-            </el-collapse>
           </div>
         </div>
       </aside>
@@ -534,7 +513,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusTag from '../components/StatusTag.vue'
 import CodeEditor from '../components/CodeEditor.vue'
@@ -548,17 +527,20 @@ import { api } from '../services/api'
 const props = defineProps({ id: { type: String, required: true } })
 
 const task = ref(null)
+const planRunPanel = ref(null)
+const codeRunPanel = ref(null)
+const reviewRunPanel = ref(null)
+const fixRunPanel = ref(null)
+const commitRunPanel = ref(null)
 const branchEditor = ref('')
 const branchCheck = ref(null)
 const planEditor = ref('')
 const commitEditor = ref('')
 const lastTaskCommitMessage = ref('')
-const retroEditor = ref('')
 const fixFeedback = ref('')
 const rejectFeedback = ref('')
 const approving = ref(false)
 const planPreview = ref(false)
-const retroPreview = ref(false)
 const diffDialogVisible = ref(false)
 // 各 AI 步骤本次执行指定的模型 key,空 = 走配置默认
 const planModel = ref('')
@@ -567,7 +549,7 @@ const codeModel = ref('')
 const fixModel = ref('')
 const reviewModel = ref('')
 const commitModel = ref('')
-const openSteps = ref(new Set())
+const activeTaskTab = ref(1)
 const branching = ref(false)
 const planning = ref(false)
 const reviewing = ref(false)
@@ -592,8 +574,8 @@ const stepByStatus = {
   review_failed: 3,
   ready_to_commit: 4,
   committing: 4,
-  committed: 5,
-  retrospected: 5,
+  committed: 4,
+  retrospected: 4,
   terminated: 1,
 }
 
@@ -663,9 +645,11 @@ const latestFixRun = computed(() => {
   if (!runs.length) return null
   const running = runs.find((run) => ['queued', 'running'].includes(run.status))
   if (running) return running
+  const draft = runs.find((run) => run.status === 'draft')
+  if (draft) return draft
   const recent = runs.find((run) => run.status !== 'draft')
   if (recent) return recent
-  return runs.find((run) => run.status === 'draft') || null
+  return null
 })
 const runningBranchRun = computed(() =>
   task.value?.runs?.find((run) => run.run_type === 'branch_name' && ['running', 'queued'].includes(run.status)),
@@ -712,6 +696,34 @@ const runHint = computed(() => {
   if (task.value?.status === 'fixing') return '继续修改(fix 轮次)'
   return 'Claude Code 修改代码'
 })
+const taskTabs = computed(() => [
+  {
+    step: 1,
+    label: '开发计划',
+    hint: latestPlan.value ? `计划 v${latestPlan.value.version}` : '待生成',
+    state: currentStep.value === 1 ? 'is-current' : 'is-done',
+  },
+  {
+    step: 2,
+    label: '代码实现',
+    hint: currentStep.value < 2 ? '待开始' : runHint.value,
+    state: currentStep.value === 2 ? 'is-current' : currentStep.value > 2 ? 'is-done' : 'is-pending',
+  },
+  {
+    step: 3,
+    label: '代码审查',
+    hint: latestReview.value
+      ? `结论：${latestReview.value.status}`
+      : latestChange.value ? `${changedFiles.value.length} 个文件变更` : '待检查',
+    state: currentStep.value === 3 ? 'is-current' : currentStep.value > 3 ? 'is-done' : 'is-pending',
+  },
+  {
+    step: 4,
+    label: '代码提交',
+    hint: task.value?.commit_hash ? task.value.commit_hash.slice(0, 10) : '待提交',
+    state: currentStep.value === 4 ? 'is-current' : 'is-pending',
+  },
+])
 const canTerminateTask = computed(() => task.value && canTerminate(task.value.status))
 
 function stepClass(step) {
@@ -720,17 +732,6 @@ function stepClass(step) {
     'flow-step--active': step === currentStep.value,
     'flow-step--locked': step > currentStep.value,
   }
-}
-
-function isOpen(step) {
-  return step === currentStep.value || openSteps.value.has(step)
-}
-
-function toggleStep(step) {
-  if (step > currentStep.value) return
-  const set = new Set(openSteps.value)
-  set.has(step) ? set.delete(step) : set.add(step)
-  openSteps.value = set
 }
 
 function formatTime(value) {
@@ -809,7 +810,6 @@ async function load({ silent = false } = {}) {
     commitEditor.value = task.value.commit_message
     lastTaskCommitMessage.value = task.value.commit_message
   }
-  if (task.value.retrospective && !retroEditor.value) retroEditor.value = task.value.retrospective.content
   syncFixFeedbackFromReview()
   syncTimers()
 }
@@ -830,7 +830,7 @@ async function generateBranch(draft = false) {
   try {
     await api.tasks.generateBranch(props.id, branchModel.value, draft === true)
     await load()
-    ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '分支名生成任务已入队,完成后自动回填')
+    ElMessage.success(draft === true ? '已生成草稿，请点击运行记录中的“编辑提示语”' : '分支名生成任务已入队,完成后自动回填')
   } finally {
     branching.value = false
   }
@@ -847,11 +847,26 @@ async function saveBranch() {
 }
 
 async function generatePlan(draft = false) {
+  if (draft === true && latestPlanRun.value?.status === 'draft') {
+    planRunPanel.value?.open()
+    return
+  }
+  if (draft !== true && latestPlanRun.value?.status === 'draft') {
+    await api.runs.execute(latestPlanRun.value.id)
+    await load()
+    ElMessage.success('已按当前提示语草稿启动计划生成')
+    return
+  }
   planning.value = true
   try {
     await api.tasks.generatePlan(props.id, planModel.value, draft === true)
     await load()
-    ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '计划生成任务已入队')
+    if (draft === true) {
+      await nextTick()
+      planRunPanel.value?.open()
+    } else {
+      ElMessage.success('计划生成任务已入队')
+    }
   } finally {
     planning.value = false
   }
@@ -881,9 +896,22 @@ async function confirmPlan() {
 }
 
 async function execute(draft = false) {
+  if (draft === true && latestCodeRun.value?.status === 'draft') {
+    codeRunPanel.value?.open()
+    return
+  }
+  if (draft !== true && latestCodeRun.value?.status === 'draft') {
+    await api.runs.execute(latestCodeRun.value.id)
+    await load()
+    ElMessage.success('已按当前提示语草稿启动 AI 修改')
+    return
+  }
   await api.tasks.execute(props.id, codeModel.value, draft === true)
   await load()
-  if (draft === true) ElMessage.success('已生成草稿，请在弹窗中编辑提示语后执行')
+  if (draft === true) {
+    await nextTick()
+    codeRunPanel.value?.open()
+  }
 }
 
 async function review() {
@@ -897,18 +925,33 @@ async function review() {
 }
 
 async function aiReview(draft = false) {
+  if (draft === true && latestAiReviewRun.value?.status === 'draft') {
+    reviewRunPanel.value?.open()
+    return
+  }
+  if (draft !== true && latestAiReviewRun.value?.status === 'draft') {
+    await api.runs.execute(latestAiReviewRun.value.id)
+    await load()
+    ElMessage.success('已按当前提示语草稿启动 AI Review')
+    return
+  }
   aiReviewing.value = true
   try {
     await api.tasks.aiReview(props.id, reviewModel.value, draft === true)
     await load()
-    ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : 'AI Review 任务已入队')
+    if (draft === true) {
+      await nextTick()
+      reviewRunPanel.value?.open()
+    } else {
+      ElMessage.success('AI Review 任务已入队')
+    }
   } finally {
     aiReviewing.value = false
   }
 }
 
 async function cleanupWorktree() {
-  await ElMessageBox.confirm('将移除该工单的独立 worktree,未提交改动会被丢弃。确认清理?', '清理 worktree', {
+  await ElMessageBox.confirm('将移除该开发任务的独立 worktree，未提交改动会被丢弃。确认清理？', '清理 worktree', {
     type: 'warning',
   })
   cleaningWorktree.value = true
@@ -922,19 +965,29 @@ async function cleanupWorktree() {
 }
 
 async function fix(draft = false) {
+  if (draft === true && latestFixRun.value?.status === 'draft') {
+    fixRunPanel.value?.open()
+    return
+  }
+  if (draft !== true && latestFixRun.value?.status === 'draft') {
+    await api.runs.execute(latestFixRun.value.id)
+    await load()
+    ElMessage.success('已按当前提示语草稿启动 Fix')
+    return
+  }
   await api.tasks.fix(props.id, fixFeedback.value, fixModel.value, draft === true)
   fixFeedback.value = ''
   await load()
   if (draft === true) {
-    ElMessage.success('已生成草稿，请在弹窗中编辑提示语后执行')
+    await nextTick()
+    fixRunPanel.value?.open()
     return
   }
-  // fix 轮次留在 Step 3,确保面板挂载并能自动弹出日志
-  openSteps.value = new Set([...openSteps.value, 3])
+  activeTaskTab.value = 3
 }
 
 async function approveReview() {
-  await ElMessageBox.confirm('确认人工 Review 通过?通过后工单进入待提交状态。', '人工 Review', {
+  await ElMessageBox.confirm('确认人工审查通过？通过后开发任务进入待提交状态。', '人工审查', {
     type: 'warning',
   })
   approving.value = true
@@ -955,9 +1008,24 @@ async function rejectReview() {
 }
 
 async function generateCommitMessage(draft = false) {
+  if (draft === true && latestCommitMessageRun.value?.status === 'draft') {
+    commitRunPanel.value?.open()
+    return
+  }
+  if (draft !== true && latestCommitMessageRun.value?.status === 'draft') {
+    await api.runs.execute(latestCommitMessageRun.value.id)
+    await load()
+    ElMessage.success('已按当前提示语草稿启动 commit message 生成')
+    return
+  }
   await api.tasks.generateCommitMessage(props.id, commitModel.value, draft === true)
-  ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : 'commit message 生成任务已入队')
   await load()
+  if (draft === true) {
+    await nextTick()
+    commitRunPanel.value?.open()
+  } else {
+    ElMessage.success('commit message 生成任务已入队')
+  }
 }
 
 async function commit() {
@@ -972,25 +1040,16 @@ async function commit() {
   }
 }
 
-async function generateRetro() {
-  const data = await api.tasks.retrospect(props.id)
-  retroEditor.value = data.content
-}
-
-async function saveRetro() {
-  await api.tasks.saveRetrospective(props.id, retroEditor.value)
-  await load()
-  ElMessage.success('复盘已保存')
-}
-
 async function terminateTask() {
-  await ElMessageBox.confirm('终止后工单关闭,不可恢复。', '终止工单', { type: 'warning' })
+  await ElMessageBox.confirm('终止后开发任务关闭，不可恢复。', '终止任务', { type: 'warning' })
   await api.tasks.terminate(props.id)
   await load()
 }
 
-watch(currentStep, () => {
-  openSteps.value = new Set()
+watch(currentStep, (value, previous) => {
+  if (activeTaskTab.value === previous || value === 1) {
+    activeTaskTab.value = value
+  }
 })
 
 onMounted(load)
@@ -1000,6 +1059,111 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.task-tabs {
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--panel-radius);
+  background: var(--surface);
+}
+
+.task-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.task-tabs :deep(.el-tabs__nav-wrap::after),
+.task-tabs :deep(.el-tabs__content) {
+  display: none;
+}
+
+.task-tabs :deep(.el-tabs__item) {
+  height: 58px;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.task-tab-label {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--text-muted);
+}
+
+.task-tab-label__index {
+  width: 23px;
+  height: 23px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font: 700 12px var(--mono);
+}
+
+.task-tab-label__text {
+  min-width: 0;
+  text-align: left;
+}
+
+.task-tab-label strong,
+.task-tab-label small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-tab-label strong {
+  color: inherit;
+  font-size: 13px;
+}
+
+.task-tab-label small {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.task-tab-label.is-done .task-tab-label__index {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.task-tab-label.is-current .task-tab-label__index {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.task-tab-panel .flow-step__body {
+  padding-top: 16px;
+  border-top: 0;
+}
+
+.task-context-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.task-context-card {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--page-bg);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.task-context-card--wide {
+  grid-column: 1 / -1;
+}
+
 .branch-inherited {
   display: flex;
   align-items: center;
@@ -1009,6 +1173,16 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line-soft);
   border-radius: 6px;
   background: var(--page-bg);
+}
+
+@media (max-width: 760px) {
+  .task-context-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .task-context-card--wide {
+    grid-column: auto;
+  }
 }
 
 .dependency-list {

@@ -87,6 +87,7 @@ class RequirementService
             ->order('t.id', 'asc')
             ->select()->toArray();
         $requirement['tasks'] = (new TaskService())->attachDependenciesToTasks($requirement['tasks'], (int) $id);
+        $requirement['retrospective'] = (new RequirementRetrospectiveService())->get((int) $id);
         return $requirement;
     }
 

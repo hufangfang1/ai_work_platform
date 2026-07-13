@@ -83,7 +83,7 @@ class RunService
     }
 
     /**
-     * 统一收口:draft=true 时只把 run 置为草稿(不入队、不改工单状态),等用户确认后再 executeDraft;
+     * 统一收口:draft=true 时只把 run 置为草稿(不入队、不改工单状态),保存提示语后再由页面主按钮 executeDraft;
      * draft=false 时按原逻辑推队列并同步工单状态。
      */
     private function dispatchOrDraft(array $run, $job, $taskId, $taskStatus, $draft)

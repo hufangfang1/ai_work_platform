@@ -29,8 +29,26 @@
       </div>
     </div>
 
+    <el-tabs v-model="activeRequirementTab" class="requirement-tabs" stretch>
+      <el-tab-pane
+        v-for="(item, index) in requirementProgress"
+        :key="item.target"
+        :name="item.target"
+      >
+        <template #label>
+          <span class="requirement-tab-label" :class="`is-${item.state}`">
+            <span class="requirement-tab-label__index">{{ index + 1 }}</span>
+            <span class="requirement-tab-label__text">
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.hint }}</small>
+            </span>
+          </span>
+        </template>
+      </el-tab-pane>
+    </el-tabs>
+
     <!-- 需求文档 -->
-    <div class="panel">
+    <div v-show="activeRequirementTab === 'requirement-doc'" id="requirement-doc" class="panel requirement-section">
       <div class="panel-header">
         <div>
           <div class="panel-title">需求文档</div>
@@ -54,9 +72,12 @@
             <el-icon><DocumentAdd /></el-icon>
             {{ latestDoc ? '更新需求文档' : '粘贴需求文档' }}
           </el-button>
+          <el-button v-if="viewingDoc" plain @click="docExpanded = !docExpanded">
+            {{ docExpanded ? '收起正文' : '展开正文' }}
+          </el-button>
         </div>
       </div>
-      <template v-if="viewingDoc">
+      <template v-if="docExpanded && viewingDoc">
         <div class="doc-preview-toolbar">
           <el-radio-group v-model="docPreview" size="small">
             <el-radio-button :value="true">预览</el-radio-button>
@@ -73,16 +94,17 @@
           :rows="10"
         />
       </template>
-      <div v-else class="empty-state">还没有需求文档,粘贴飞书文档内容开始</div>
+      <div v-else-if="!viewingDoc" class="empty-state">还没有需求文档,粘贴飞书文档内容开始</div>
+      <div v-else class="collapsed-summary">正文已收起，需要核对原始需求时再展开。</div>
     </div>
 
     <!-- AI 拆解 -->
-    <div class="panel breakdown-panel">
+    <div v-show="activeRequirementTab === 'requirement-breakdown'" id="requirement-breakdown" class="panel breakdown-panel requirement-section">
       <div class="panel-header breakdown-header">
         <div>
           <div class="panel-title">需求拆解</div>
           <div class="muted">
-            AI 判断需求涉及哪些项目、各项目职责与接口约定;确认后按项目生成工单。
+            AI 判断需求涉及哪些项目、各项目职责与接口约定；确认后按项目生成开发任务。
             <template v-if="latestBreakdown">
               当前版本 v{{ latestBreakdown.version }}({{ latestBreakdown.source === 'ai' ? 'AI 生成' : '人工编辑' }})
               <span v-if="latestBreakdown.confirmed_at" class="success-text">
@@ -121,7 +143,7 @@
             @click="generateBreakdown"
           >
             <el-icon><MagicStick /></el-icon>
-            {{ latestBreakdown ? '重新拆解' : 'AI 拆解需求' }}
+            {{ latestBreakdownRun?.status === 'draft' ? '执行当前草稿' : (latestBreakdown ? '重新拆解' : 'AI 拆解需求') }}
           </el-button>
           <el-button
             plain
@@ -135,15 +157,17 @@
           <el-button @click="saveBreakdown">保存编辑为新版本</el-button>
           <el-button type="success" :loading="confirming" @click="confirmBreakdown">
             <el-icon><Select /></el-icon>
-            确认拆解并生成工单
+            确认拆解并生成任务
           </el-button>
         </div>
       </div>
       <AiRunPanel
         v-if="latestBreakdownRun"
+        ref="breakdownRunPanel"
         class="requirement-run-panel"
         :run="latestBreakdownRun"
         :retry-model="breakdownModel"
+        hide-draft-open-button
         @refresh="load"
       />
 
@@ -203,67 +227,116 @@
       <div v-else class="empty-state">
         {{ latestDoc ? '点击"AI 拆解需求",让 AI 判断涉及的项目' : '请先录入需求文档' }}
       </div>
-    </div>
 
-    <!-- 子工单看板 -->
-    <div class="panel">
-      <div class="panel-header">
+      <!-- 开发任务是确认拆解后的产物，和拆解结果放在同一页 -->
+      <div class="breakdown-tasks">
+        <div class="breakdown-tasks__header">
         <div>
-          <div class="panel-title">工单({{ requirement.tasks.length }})</div>
-          <div class="muted">每个项目一张工单,独立走 计划 → 编码 → Review → 提交 流程。</div>
+            <div class="panel-title">开发任务（{{ requirement.tasks.length }}）</div>
+            <div class="muted">确认拆解后按项目生成；点击任务进入开发计划 → 代码实现 → 代码审查 → 代码提交流程。</div>
+          </div>
         </div>
-      </div>
-      <div v-if="requirement.tasks.length" class="card-grid">
-        <div
-          v-for="task in requirement.tasks"
-          :key="task.id"
-          class="task-card"
-          @click="$router.push(`/tasks/${task.id}`)"
-        >
-          <div class="card-title">
-            <span class="chip chip--brand">{{ task.project_name }}</span>
-            <StatusTag :status="task.status" />
-          </div>
-          <div style="font-weight: 600">{{ task.title }}</div>
-          <div v-if="task.final_branch_name" class="card-line mono">{{ task.final_branch_name }}</div>
-          <div class="card-line">{{ task.scope_summary || '无职责摘要' }}</div>
-          <div v-if="task.dependencies?.length" class="dependency-line">
-            依赖:
-            <span
-              v-for="dependency in task.dependencies"
-              :key="dependency.project_id"
-              :class="dependency.ready ? 'success-text' : 'danger-text'"
-            >
-              {{ dependency.project_name || `project#${dependency.project_id}` }}({{ dependency.ready ? '已完成' : '未完成' }})
-            </span>
-          </div>
-          <div v-if="task.dependents?.length" class="dependency-line">
-            被依赖:
-            <span v-for="dependent in task.dependents" :key="dependent.project_id">
-              {{ dependent.project_name || `project#${dependent.project_id}` }}
-            </span>
-          </div>
-          <div class="task-card-spec" @click.stop>
-            <el-collapse v-if="task.spec_markdown" class="embedded-spec">
-              <el-collapse-item title="本项目需求文档">
-                <MarkdownView :source="task.spec_markdown" max-height="340px" />
-              </el-collapse-item>
-            </el-collapse>
-            <div v-else class="task-card-spec__empty">
-              本项目需求文档生成中或尚未生成，可进入工单页单独生成。
+        <div v-if="requirement.tasks.length" class="card-grid">
+          <div
+            v-for="task in requirement.tasks"
+            :key="task.id"
+            class="task-card"
+            @click="$router.push(`/tasks/${task.id}`)"
+          >
+            <div class="card-title">
+              <span class="chip chip--brand">{{ task.project_name }}</span>
+              <StatusTag :status="task.status" />
+            </div>
+            <div style="font-weight: 600">{{ task.title }}</div>
+            <div v-if="task.final_branch_name" class="card-line mono">{{ task.final_branch_name }}</div>
+            <div class="card-line">{{ task.scope_summary || '无职责摘要' }}</div>
+            <div v-if="task.dependencies?.length" class="dependency-line">
+              依赖:
+              <span
+                v-for="dependency in task.dependencies"
+                :key="dependency.project_id"
+                :class="dependency.ready ? 'success-text' : 'danger-text'"
+              >
+                {{ dependency.project_name || `project#${dependency.project_id}` }}({{ dependency.ready ? '已完成' : '未完成' }})
+              </span>
+            </div>
+            <div v-if="task.dependents?.length" class="dependency-line">
+              被依赖:
+              <span v-for="dependent in task.dependents" :key="dependent.project_id">
+                {{ dependent.project_name || `project#${dependent.project_id}` }}
+              </span>
+            </div>
+            <div class="task-card-spec" @click.stop>
+              <el-collapse v-if="task.spec_markdown" class="embedded-spec">
+                <el-collapse-item title="本项目需求文档">
+                  <MarkdownView :source="task.spec_markdown" max-height="340px" />
+                </el-collapse-item>
+              </el-collapse>
+              <div v-else class="task-card-spec__empty">
+                本项目需求文档生成中或尚未生成，可进入任务页单独生成。
+              </div>
             </div>
           </div>
         </div>
+        <div v-else class="empty-state">确认拆解后将自动为每个项目生成开发任务</div>
       </div>
-      <div v-else class="empty-state">确认拆解后将自动为每个项目生成工单</div>
+    </div>
+
+    <!-- 需求级项目复盘 -->
+    <div v-show="activeRequirementTab === 'requirement-retrospective'" id="requirement-retrospective" class="panel retrospective-panel requirement-section">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">项目复盘</div>
+          <div class="muted">
+            在本需求全部项目提交后，按项目汇总执行失败、Review 问题、验证结果和后续优化；可人工补充跨项目协作问题。
+          </div>
+        </div>
+        <div class="toolbar">
+          <el-button
+            :loading="retroGenerating"
+            :disabled="!canGenerateRetrospective"
+            @click="generateRetrospective"
+          >
+            {{ requirement.retrospective ? '重新生成' : '生成项目复盘' }}
+          </el-button>
+          <el-button
+            type="primary"
+            :loading="retroSaving"
+            :disabled="!retroEditor.trim()"
+            @click="saveRetrospective"
+          >
+            保存复盘
+          </el-button>
+        </div>
+      </div>
+      <el-alert
+        v-if="unfinishedRetrospectiveProjects.length"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="`需等待以下项目提交：${unfinishedRetrospectiveProjects.join('、')}`"
+      />
+      <template v-if="retroEditor">
+        <div class="retro-view-toolbar">
+          <el-radio-group v-model="retroPreview" size="small">
+            <el-radio-button :value="true">预览</el-radio-button>
+            <el-radio-button :value="false">编辑</el-radio-button>
+          </el-radio-group>
+        </div>
+        <MarkdownView v-if="retroPreview" :source="retroEditor" max-height="620px" />
+        <CodeEditor v-else v-model="retroEditor" label="需求项目复盘(Markdown)" language="markdown" :rows="22" />
+      </template>
+      <div v-else class="empty-state">
+        {{ requirement.tasks.length ? '所有项目提交后可生成本次需求的项目复盘' : '确认拆解并生成开发任务后，才能形成复盘' }}
+      </div>
     </div>
 
     <!-- 需求分支 -->
-    <div class="panel">
+    <div v-show="activeRequirementTab === 'requirement-branch'" id="requirement-branch" class="panel requirement-section">
       <div class="panel-header">
         <div>
           <div class="panel-title">需求分支</div>
-          <div class="muted">工单生成后维护；同一需求下的所有项目工单复用这一条分支名。</div>
+          <div class="muted">开发任务生成后维护；同一需求下的所有开发任务复用这一条分支名。</div>
         </div>
       </div>
       <div class="branch-toolbar">
@@ -274,7 +347,7 @@
           @click="generateBranch"
         >
           <el-icon><MagicStick /></el-icon>
-          {{ requirement.final_branch_name ? '重新生成分支名' : 'AI 生成分支名' }}
+          {{ latestBranchRun?.status === 'draft' ? '执行当前草稿' : (requirement.final_branch_name ? '重新生成分支名' : 'AI 生成分支名') }}
         </el-button>
         <el-button
           plain
@@ -295,12 +368,12 @@
           :disabled="!canManageBranch || !branchEditor || requirement.status === 'closed'"
           @click="saveBranch"
         >
-          保存并同步工单
+          保存同步任务
         </el-button>
         <el-button :disabled="!canManageBranch || !branchEditor" @click="checkBranch">校验</el-button>
       </div>
       <div v-if="!canManageBranch" class="muted branch-check">
-        请先确认需求拆解并生成工单，再生成需求分支。
+        请先确认需求拆解并生成开发任务，再生成需求分支。
       </div>
       <div v-if="branchCheck" class="branch-check">
         <span :class="branchCheck.valid ? 'success-text' : 'danger-text'">{{ branchCheck.message }}</span>
@@ -310,13 +383,15 @@
       </div>
       <AiRunPanel
         v-if="latestBranchRun"
+        ref="branchRunPanel"
         class="requirement-run-panel"
         :run="latestBranchRun"
         :retry-model="branchModel"
+        hide-draft-open-button
         @refresh="load"
       />
       <div v-if="branchRunning" class="empty-state">
-        AI 分支名生成任务已入队，可查看日志；完成后会自动同步到该需求下的工单。
+        AI 分支名生成任务已入队，可查看日志；完成后会自动同步到该需求下的开发任务。
       </div>
     </div>
 
@@ -344,7 +419,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusTag from '../components/StatusTag.vue'
 import CodeEditor from '../components/CodeEditor.vue'
@@ -359,18 +434,28 @@ const requirement = ref(null)
 const allProjects = ref([])
 const selectedProjectIds = ref([])
 const breakdownEditor = ref('')
+const breakdownRunPanel = ref(null)
 const breakdownModel = ref('')
 const branchModel = ref('')
 const branchEditor = ref('')
 const branchCheck = ref(null)
+const branchRunPanel = ref(null)
 const breakdownPreview = ref(true)
 const docPreview = ref(true)
+const docExpanded = ref(true)
+const activeRequirementTab = ref('requirement-doc')
 const viewDocId = ref(null)
 const docDialogVisible = ref(false)
 const savingDoc = ref(false)
 const confirming = ref(false)
+const retroEditor = ref('')
+const retroPreview = ref(true)
+const retroProjectSummaries = ref([])
+const retroGenerating = ref(false)
+const retroSaving = ref(false)
 const docForm = reactive({ doc_url: '', content: '' })
 let detailTimer = null
+let tabInitialized = false
 
 const latestDoc = computed(() => (requirement.value?.docs?.length ? requirement.value.docs[0] : null))
 const viewingDoc = computed(() => {
@@ -415,6 +500,48 @@ const branchRunning = computed(() => !!activeBranchRun.value)
 const canManageBranch = computed(() =>
   (requirement.value?.tasks || []).some((task) => task.status !== 'terminated'),
 )
+const unfinishedRetrospectiveProjects = computed(() =>
+  (requirement.value?.tasks || [])
+    .filter((task) => task.status !== 'terminated' && !['committed', 'retrospected'].includes(task.status))
+    .map((task) => `${task.project_name || `project#${task.project_id}`}（${task.status}）`),
+)
+const canGenerateRetrospective = computed(() =>
+  (requirement.value?.tasks || []).some((task) => ['committed', 'retrospected'].includes(task.status))
+    && unfinishedRetrospectiveProjects.value.length === 0,
+)
+const activeRequirementTasks = computed(() =>
+  (requirement.value?.tasks || []).filter((task) => task.status !== 'terminated'),
+)
+const completedTaskCount = computed(() =>
+  activeRequirementTasks.value.filter((task) => ['committed', 'retrospected'].includes(task.status)).length,
+)
+const requirementProgress = computed(() => {
+  const hasDoc = Boolean(latestDoc.value)
+  const hasConfirmedBreakdown = Boolean(latestBreakdown.value?.confirmed_at)
+  const hasBranch = Boolean(requirement.value?.final_branch_name)
+  const taskTotal = activeRequirementTasks.value.length
+  const tasksDone = taskTotal > 0 && completedTaskCount.value === taskTotal
+  const hasRetro = Boolean(requirement.value?.retrospective)
+  const reached = [hasDoc, hasConfirmedBreakdown, hasBranch, hasRetro]
+  const current = Math.max(0, reached.findIndex((done) => !done))
+  const state = (index) => (reached[index] ? 'done' : index === current ? 'current' : 'pending')
+  return [
+    { label: '需求文档', hint: hasDoc ? `快照 v${latestDoc.value.version}` : '待录入', target: 'requirement-doc', state: state(0) },
+    {
+      label: '需求拆解',
+      hint: hasConfirmedBreakdown ? `已确认 · ${taskTotal} 个任务` : '待确认',
+      target: 'requirement-breakdown',
+      state: state(1),
+    },
+    { label: '需求分支', hint: hasBranch ? requirement.value.final_branch_name : '待生成', target: 'requirement-branch', state: state(2) },
+    {
+      label: '项目复盘',
+      hint: hasRetro ? '已保存' : tasksDone ? '待复盘' : `等待项目 ${completedTaskCount.value}/${taskTotal}`,
+      target: 'requirement-retrospective',
+      state: state(3),
+    },
+  ]
+})
 
 watch(latestBreakdown, (value) => {
   breakdownEditor.value = value ? value.content : ''
@@ -435,9 +562,18 @@ async function load() {
   docForm.doc_url = requirement.value.doc_url
   branchEditor.value = requirement.value.final_branch_name || ''
   if (latestDoc.value) viewDocId.value = latestDoc.value.id
+  if (!tabInitialized) {
+    const current = requirementProgress.value.find((item) => item.state === 'current')
+    activeRequirementTab.value = current?.target || 'requirement-retrospective'
+    tabInitialized = true
+  }
   // 已有拆解时,回填其涉及项目,方便「重新拆解」时沿用人工范围
   const ids = breakdownProjects.value.map((item) => item.project_id).filter(Boolean)
   if (ids.length) selectedProjectIds.value = ids
+  if (requirement.value.retrospective && !retroEditor.value) {
+    retroEditor.value = requirement.value.retrospective.content || ''
+    retroProjectSummaries.value = requirement.value.retrospective.project_summaries || []
+  }
   syncTimer()
 }
 
@@ -469,27 +605,57 @@ async function saveDoc() {
 }
 
 async function generateBreakdown(draft = false) {
+  if (draft === true && latestBreakdownRun.value?.status === 'draft') {
+    breakdownRunPanel.value?.open()
+    return
+  }
+  if (draft !== true && latestBreakdownRun.value?.status === 'draft') {
+    await api.runs.execute(latestBreakdownRun.value.id)
+    await load()
+    ElMessage.success('已按当前提示语草稿启动需求拆解')
+    return
+  }
   await api.requirements.generateBreakdown(props.id, {
     project_ids: selectedProjectIds.value,
     model: breakdownModel.value,
     draft: draft === true ? 1 : 0,
   })
-  ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '需求拆解任务已入队')
   await load()
+  if (draft === true) {
+    await nextTick()
+    breakdownRunPanel.value?.open()
+    return
+  }
+  ElMessage.success('需求拆解任务已入队')
 }
 
 async function generateBranch(draft = false) {
+  if (draft === true && latestBranchRun.value?.status === 'draft') {
+    branchRunPanel.value?.open()
+    return
+  }
+  if (draft !== true && latestBranchRun.value?.status === 'draft') {
+    await api.runs.execute(latestBranchRun.value.id)
+    await load()
+    ElMessage.success('已按当前提示语草稿启动分支名生成')
+    return
+  }
   await api.requirements.generateBranch(props.id, branchModel.value, draft === true)
   branchCheck.value = null
-  ElMessage.success(draft === true ? '已生成草稿，请在弹窗中编辑提示语后执行' : '需求分支名生成任务已入队')
   await load()
+  if (draft === true) {
+    await nextTick()
+    branchRunPanel.value?.open()
+    return
+  }
+  ElMessage.success('需求分支名生成任务已入队')
 }
 
 async function saveBranch() {
   const name = branchEditor.value.trim()
   await api.requirements.saveBranch(props.id, name)
   branchCheck.value = await api.requirements.checkBranch(props.id, name)
-  ElMessage.success('需求分支已同步到相关工单')
+  ElMessage.success('需求分支已同步到相关开发任务')
   await load()
 }
 
@@ -508,7 +674,7 @@ async function saveBreakdown() {
 
 async function confirmBreakdown() {
   await ElMessageBox.confirm(
-    `将按拆解结果为 ${breakdownProjects.value.length} 个项目生成工单,确认?`,
+    `将按拆解结果为 ${breakdownProjects.value.length} 个项目生成开发任务，确认？`,
     '确认拆解',
     { type: 'warning' },
   )
@@ -516,7 +682,7 @@ async function confirmBreakdown() {
   try {
     const created = await api.requirements.confirmBreakdown(props.id)
     const fresh = created.filter((item) => !item.skipped).length
-    ElMessage.success(`已生成 ${fresh} 张工单`)
+    ElMessage.success(`已生成 ${fresh} 个开发任务`)
     await load()
   } finally {
     confirming.value = false
@@ -529,6 +695,34 @@ async function closeRequirement() {
   await load()
 }
 
+async function generateRetrospective() {
+  retroGenerating.value = true
+  try {
+    const data = await api.requirements.retrospect(props.id)
+    retroEditor.value = data.content
+    retroProjectSummaries.value = data.project_summaries || []
+    retroPreview.value = true
+    ElMessage.success('已按项目汇总本次需求的实际执行记录')
+  } finally {
+    retroGenerating.value = false
+  }
+}
+
+async function saveRetrospective() {
+  retroSaving.value = true
+  try {
+    await api.requirements.saveRetrospective(
+      props.id,
+      retroEditor.value,
+      retroProjectSummaries.value,
+    )
+    await load()
+    ElMessage.success('需求项目复盘已保存')
+  } finally {
+    retroSaving.value = false
+  }
+}
+
 onMounted(load)
 onBeforeUnmount(() => {
   if (detailTimer) clearInterval(detailTimer)
@@ -538,6 +732,93 @@ onBeforeUnmount(() => {
 <style scoped>
 .requirement-run-panel {
   margin-bottom: 12px;
+}
+
+.requirement-tabs {
+  min-width: 0;
+  padding: 0 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--panel-radius);
+  background: var(--surface);
+}
+
+.requirement-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.requirement-tabs :deep(.el-tabs__nav-wrap::after) {
+  display: none;
+}
+
+.requirement-tabs :deep(.el-tabs__item) {
+  height: 60px;
+  padding: 0 8px;
+}
+
+.requirement-tabs :deep(.el-tabs__content) {
+  display: none;
+}
+
+.requirement-tab-label {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.requirement-tab-label__index {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font: 700 12px var(--mono);
+}
+
+.requirement-tab-label__text {
+  min-width: 0;
+  text-align: left;
+}
+
+.requirement-tab-label strong,
+.requirement-tab-label small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.requirement-tab-label strong {
+  color: inherit;
+  font-size: 13px;
+}
+
+.requirement-tab-label small {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.requirement-tab-label.is-done .requirement-tab-label__index {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.requirement-tab-label.is-current .requirement-tab-label__index {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.collapsed-summary {
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--text-muted);
+  text-align: center;
 }
 
 .branch-toolbar {
@@ -563,9 +844,38 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
 }
 
+.retrospective-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.retro-view-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .breakdown-panel {
   display: grid;
   gap: 14px;
+}
+
+.breakdown-tasks {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.breakdown-tasks__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.breakdown-tasks .card-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 
 .breakdown-header {
@@ -576,7 +886,9 @@ onBeforeUnmount(() => {
 .breakdown-actions {
   min-width: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 10px;
+  align-items: end;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--line-soft);
 }
@@ -584,7 +896,7 @@ onBeforeUnmount(() => {
 .breakdown-generate-actions {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(240px, 320px) minmax(180px, 220px) max-content;
+  grid-template-columns: minmax(240px, 1fr) minmax(180px, 220px) max-content max-content;
   gap: 10px;
   align-items: center;
 }
@@ -597,7 +909,7 @@ onBeforeUnmount(() => {
 .breakdown-version-actions {
   min-width: 0;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 10px;
 }
@@ -613,8 +925,8 @@ onBeforeUnmount(() => {
 .breakdown-workspace {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
-  gap: 20px;
+  grid-template-columns: 1fr;
+  gap: 16px;
   align-items: start;
 }
 
@@ -629,8 +941,14 @@ onBeforeUnmount(() => {
 .breakdown-projects {
   min-width: 0;
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   align-content: start;
+}
+
+.breakdown-projects > .metric-label,
+.breakdown-projects > .muted {
+  grid-column: 1 / -1;
 }
 
 .breakdown-projects .task-card,
@@ -715,6 +1033,14 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1100px) {
+  .requirement-tabs :deep(.el-tabs__item) {
+    min-width: 145px;
+  }
+
+  .breakdown-actions {
+    grid-template-columns: 1fr;
+  }
+
   .branch-toolbar {
     grid-template-columns: minmax(180px, 220px) minmax(260px, 1fr);
   }
@@ -752,6 +1078,10 @@ onBeforeUnmount(() => {
   }
 
   .breakdown-generate-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .breakdown-projects {
     grid-template-columns: 1fr;
   }
 

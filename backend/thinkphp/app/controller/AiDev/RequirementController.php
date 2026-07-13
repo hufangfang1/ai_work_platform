@@ -5,6 +5,7 @@ namespace app\controller\AiDev;
 use app\service\AiDev\BreakdownService;
 use app\service\AiDev\BranchService;
 use app\service\AiDev\RequirementService;
+use app\service\AiDev\RequirementRetrospectiveService;
 use think\facade\Db;
 
 class RequirementController extends BaseController
@@ -89,5 +90,25 @@ class RequirementController extends BaseController
             ->order('t.id', 'asc')
             ->select()->toArray();
         return $this->ok($tasks);
+    }
+
+    public function retrospect($id, RequirementRetrospectiveService $service)
+    {
+        return $this->ok($service->generate((int) $id));
+    }
+
+    public function getRetrospective($id, RequirementRetrospectiveService $service)
+    {
+        return $this->ok($service->get((int) $id));
+    }
+
+    public function saveRetrospective($id, RequirementRetrospectiveService $service)
+    {
+        $summaries = $this->request->put('project_summaries', []);
+        return $this->ok($service->save(
+            (int) $id,
+            $this->request->put('content/s', ''),
+            is_array($summaries) ? $summaries : []
+        ));
     }
 }

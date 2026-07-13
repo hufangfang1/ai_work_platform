@@ -51,6 +51,13 @@ export const api = {
     checkBranch: (id, finalBranchName) =>
       request('POST', `/requirements/${id}/check-branch`, { final_branch_name: finalBranchName }),
     tasks: (id) => request('GET', `/requirements/${id}/tasks`),
+    retrospect: (id) => request('POST', `/requirements/${id}/retrospect`),
+    getRetrospective: (id) => request('GET', `/requirements/${id}/retrospective`),
+    saveRetrospective: (id, content, projectSummaries = []) =>
+      request('PUT', `/requirements/${id}/retrospective`, {
+        content,
+        project_summaries: projectSummaries,
+      }),
   },
 
   tasks: {

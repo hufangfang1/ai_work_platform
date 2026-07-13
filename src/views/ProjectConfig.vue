@@ -423,7 +423,7 @@ async function saveEdit() {
 }
 
 async function remove(project) {
-  await ElMessageBox.confirm(`停用项目「${project.name}」?已有工单不受影响。`, '停用项目', {
+  await ElMessageBox.confirm(`停用项目「${project.name}」？已有开发任务不受影响。`, '停用项目', {
     type: 'warning',
   })
   await api.projects.remove(project.id)

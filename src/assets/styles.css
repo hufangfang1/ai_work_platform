@@ -397,7 +397,7 @@ textarea {
   animation: status-pulse 1.4s ease-in-out infinite;
 }
 
-/* ---------- 项目/工单徽章 ---------- */
+/* ---------- 项目/任务徽章 ---------- */
 
 .chip {
   display: inline-flex;

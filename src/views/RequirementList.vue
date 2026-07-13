@@ -3,7 +3,7 @@
     <div class="page-heading">
       <div>
         <h1>需求</h1>
-        <p>一个需求可以关联多个项目,拆解后为每个项目生成独立工单。</p>
+        <p>一个需求可以关联多个项目，拆解后为每个项目生成独立开发任务。</p>
       </div>
       <div class="toolbar">
         <el-button type="primary" @click="createVisible = true">
@@ -38,7 +38,7 @@
             <span v-else class="muted">未拆解</span>
           </template>
         </el-table-column>
-        <el-table-column label="工单进度" width="170">
+        <el-table-column label="任务进度" width="170">
           <template #default="{ row }">
             <template v-if="row.task_total > 0">
               <div class="muted" style="font-size: 12px; margin-bottom: 4px">

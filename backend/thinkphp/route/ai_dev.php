@@ -16,6 +16,9 @@ Route::group('api/ai-dev', function () {
     Route::put('requirements/:id/branch', 'AiDev.RequirementController/saveBranch');
     Route::post('requirements/:id/check-branch', 'AiDev.RequirementController/checkBranch');
     Route::get('requirements/:id/tasks', 'AiDev.RequirementController/tasks');
+    Route::post('requirements/:id/retrospect', 'AiDev.RequirementController/retrospect');
+    Route::get('requirements/:id/retrospective', 'AiDev.RequirementController/getRetrospective');
+    Route::put('requirements/:id/retrospective', 'AiDev.RequirementController/saveRetrospective');
 
     Route::get('tasks', 'AiDev.TaskController/index');
     Route::post('tasks', 'AiDev.TaskController/save');

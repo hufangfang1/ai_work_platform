@@ -159,10 +159,14 @@ CREATE TABLE ai_dev_reviews (
 CREATE TABLE ai_dev_retrospectives (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   task_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  requirement_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
   content MEDIUMTEXT,
+  project_summaries_json MEDIUMTEXT,
   created_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_task_id (task_id)
+  updated_at DATETIME NULL,
+  KEY idx_task_id (task_id),
+  KEY idx_requirement_id (requirement_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE ai_dev_model_configs (

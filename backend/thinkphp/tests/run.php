@@ -62,4 +62,24 @@ try {
     $check(true, '非 JSON 输出会被拒绝');
 }
 
+$retrospective = new app\service\AiDev\RequirementRetrospectiveService();
+$render = new ReflectionMethod($retrospective, 'render');
+$render->setAccessible(true);
+$content = $render->invoke($retrospective, ['title' => '示例需求'], [[
+    'project_name' => 'demo-api',
+    'status' => 'committed',
+    'scope_summary' => '实现示例接口',
+    'commit_hash' => 'abc123',
+    'changed_files' => ['app/controller/Demo.php'],
+    'coding_run_count' => 2,
+    'fix_count' => 1,
+    'review_count' => 2,
+    'issues' => ['缺少参数校验'],
+    'verification' => '测试通过',
+    'optimizations' => ['补充参数边界测试'],
+]]);
+$check(strpos($content, '## 项目：demo-api') !== false, '需求复盘按项目分段');
+$check(strpos($content, '缺少参数校验') !== false && strpos($content, '补充参数边界测试') !== false, '需求复盘保留实际问题与优化项');
+$check(strpos($content, '接入 MR/PR') === false && strpos($content, '飞书通知') === false, '需求复盘不注入固定套话');
+
 exit($failures === 0 ? 0 : 1);
