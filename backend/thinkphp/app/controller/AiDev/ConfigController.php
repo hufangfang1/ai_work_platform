@@ -53,11 +53,6 @@ class ConfigController extends BaseController
         return $this->ok($service->saveModelProfiles($this->request->put('profiles/a', [])));
     }
 
-    public function refreshModelProfiles(ConfigService $service)
-    {
-        return $this->ok($service->refreshLocalModelProfiles());
-    }
-
     public function securityRules(ConfigService $service)
     {
         return $this->ok($service->securityRules());

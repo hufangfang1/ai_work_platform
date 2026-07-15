@@ -52,7 +52,10 @@ class PlanService
             'options' => [
                 'cwd' => $project['local_path'],
                 'allowed_tools' => 'Read,Glob,Grep',
-                'max_turns' => 25,
+                'disallowed_tools' => 'Bash,WebFetch,WebSearch,Write,Edit,NotebookEdit,Skill,Workflow',
+                // 研究阶段保持有界；达到上限后 GenerationExecutor 会自动复用 session
+                // 进入“禁止工具、只输出 JSON”的短收尾阶段，避免在工具调用中耗尽总时长。
+                'max_turns' => 18,
                 'timeout' => (int) config('ai_dev.agent.plan_timeout', 1200),
             ],
         ], 'task:' . (int) $taskId, $model, $draft);
@@ -249,6 +252,8 @@ class PlanService
         $dependencyBlock = trim((string) $dependencyContext) !== '' ? $dependencyContext . "\n\n" : '';
         $common = "你在该项目代码库根目录,可用 Read/Glob/Grep 阅读代码(禁止修改任何文件)。"
             . "为以下需求产出本项目的开发计划。"
+            . "工具探索最多使用 12 轮；证据足够或达到 12 轮后必须立即停止调用工具并输出最终 JSON。"
+            . "禁止为了探测状态调用 echo/noop 等无业务价值工具，必须为最终输出保留轮次。\n"
             . "最终回复必须且只能是一个 JSON 对象,结构:{\"plan_markdown\":\"...\"};"
             . "禁止在 JSON 前后输出任何说明、总结或过渡句(例如『我已经收集了足够的信息』『现在生成开发计划』)。\n"
             . "JSON 格式要求:plan_markdown 的值必须是合法 JSON 字符串;换行写成 \\n,双引号写成 \\\",反引号无需转义;"

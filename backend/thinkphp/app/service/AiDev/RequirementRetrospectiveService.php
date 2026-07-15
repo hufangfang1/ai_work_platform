@@ -152,10 +152,6 @@ class RequirementRetrospectiveService
         if ($failedCount > 0) {
             $optimizations[] = "本次有 {$failedCount} 次失败/取消执行；应根据上方失败原因补齐前置校验，避免进入编码后才失败。";
         }
-        if (!trim((string) $task['lint_command']) && !trim((string) $task['test_command']) && !trim((string) $task['build_command'])) {
-            $optimizations[] = '该项目未配置 lint/test/build 命令，当前无法形成可执行的自动验收证据；建议至少补充一个与本次改动相关的检查命令。';
-        }
-
         $latestReview = $reviews ? end($reviews) : null;
         return [
             'task_id' => $taskId,

@@ -55,6 +55,85 @@ foreach ($cases as $label => $case) {
     }
 }
 
+$projectService = new app\service\AiDev\ProjectService();
+$describePayload = $projectService->describePayload('/tmp/example-project');
+$describeOptions = isset($describePayload['options']) ? $describePayload['options'] : [];
+$check(($describeOptions['max_turns'] ?? 0) === 2, '项目描述限制为 2 轮纯总结');
+$check(($describeOptions['timeout'] ?? 0) === 180, '项目描述单轮生成超时为 180 秒');
+$check(
+    strpos((string) ($describeOptions['disallowed_tools'] ?? ''), 'Read') !== false
+        && strpos((string) ($describeOptions['disallowed_tools'] ?? ''), 'Glob') !== false,
+    '项目描述禁用所有仓库探索工具'
+);
+$snapshot = (new app\service\AiDev\RepositorySnapshotService())->build(dirname(__DIR__));
+$check(strpos($snapshot, 'composer.json') !== false, '有界仓库快照包含依赖摘要');
+$check(strpos($snapshot, 'vendor/') === false, '有界仓库快照排除 vendor 依赖目录');
+
+// 项目描述的工具日志往往比最终 JSON 更长，必须优先选中含 description 的 result。
+$descriptionResult = json_encode(['description' => str_repeat('项目职责说明', 12)], JSON_UNESCAPED_UNICODE);
+$resultTexts = new ReflectionProperty($service, 'resultTexts');
+$resultTexts->setAccessible(true);
+$resultTexts->setValue($service, [$descriptionResult]);
+$pickResultText = new ReflectionMethod($service, 'pickResultText');
+$pickResultText->setAccessible(true);
+$longToolEvent = json_encode(['type' => 'tool_result', 'content' => str_repeat('x', 2000)]);
+$check(
+    $pickResultText->invoke($service, $longToolEvent) === $descriptionResult,
+    '项目描述优先选择最终 description JSON，不误选更长的工具日志'
+);
+$resultTexts->setValue($service, []);
+
+$reportFindings = new ReflectionMethod($service, 'parseReportFindingsEvent');
+$reportFindings->setAccessible(true);
+$noFindings = $reportFindings->invoke($service, [
+    'type' => 'assistant',
+    'message' => ['content' => [[
+        'type' => 'tool_use',
+        'name' => 'ReportFindings',
+        'input' => ['findings' => []],
+    ]]],
+]);
+$check(
+    is_array($noFindings) && $noFindings['status'] === 'pass' && $noFindings['blocking_issues'] === [],
+    'ReportFindings 空结果正确转换为 Review 通过'
+);
+
+$runService = new app\service\AiDev\RunService();
+$codingRules = new ReflectionMethod($runService, 'codingExecutionRules');
+$codingRules->setAccessible(true);
+$rules = $codingRules->invoke($runService);
+$check(strpos($rules, '最多 8 次') !== false, '编码提示限制首轮探索预算');
+$check(strpos($rules, '禁止重新拆解、重新规划') !== false, '编码提示明确进入计划执行模式');
+
+$reviewService = new app\service\AiDev\ReviewService();
+$runConfiguredChecks = new ReflectionMethod($reviewService, 'runConfiguredChecks');
+$runConfiguredChecks->setAccessible(true);
+$emptyChecks = $runConfiguredChecks->invoke($reviewService, [], sys_get_temp_dir());
+$check(
+    $emptyChecks[0] === '' && $emptyChecks[1] === [] && $emptyChecks[2] === [],
+    '未配置检查命令时静默跳过，不生成阻塞问题'
+);
+
+$normalizeReview = new ReflectionMethod($reviewService, 'normalizeAiReviewResult');
+$normalizeReview->setAccessible(true);
+$passWithSuggestion = $normalizeReview->invoke($reviewService, [
+    'status' => 'pass',
+    'summary' => '检查通过',
+    'blocking_issues' => [],
+    'suggestions' => ['提交前确认 diff'],
+]);
+$check(
+    empty($passWithSuggestion['blocking_issues']) && !empty($passWithSuggestion['suggestions']),
+    '通过结果的建议不会被误判为阻塞问题'
+);
+
+$malformedDescription = '{"description":"该项目"橙啦新运营中台"是基于 Vue3 的后台管理系统前端工程，负责管理端页面交互与数据展示。"}';
+$recoveredDescription = $extract->invoke($service, $malformedDescription);
+$check(
+    isset($recoveredDescription['description']) && strpos($recoveredDescription['description'], '橙啦新运营中台') !== false,
+    '项目描述 JSON 内部双引号未转义时可恢复'
+);
+
 try {
     $extract->invoke($service, 'not json');
     $check(false, '非 JSON 输出会被拒绝');

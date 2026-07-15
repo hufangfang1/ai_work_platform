@@ -15,7 +15,7 @@ PHP="/opt/homebrew/bin/php"
 QUEUE="ai_dev_code"
 # 用于精确匹配 / 杀进程的特征串
 PATTERN="queue:work --queue ${QUEUE}"
-ARGS="queue:work --queue ${QUEUE} --sleep 1 --tries 1 --timeout 3600"
+ARGS="queue:work --queue ${QUEUE} --sleep 1 --tries 2 --timeout 3600"
 LOG="${ROOT}/runtime/queue_worker.log"
 
 pid() { pgrep -f "${PATTERN}" || true; }

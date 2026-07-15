@@ -60,8 +60,10 @@
           <el-collapse v-if="promptText" class="ai-run-panel__prompt">
             <el-collapse-item name="prompt">
               <template #title>
-                <span class="chip">请求提示语</span>
-                <span class="muted ai-run-panel__prompt-hint">实际发送给大模型的完整 prompt</span>
+                <div class="ai-run-panel__prompt-title">
+                  <span class="ai-run-panel__prompt-label">请求提示语</span>
+                  <span class="ai-run-panel__prompt-hint">实际发送给大模型的完整 prompt</span>
+                </div>
               </template>
               <div class="ai-run-panel__prompt-body">
                 <el-button size="small" plain @click="copyPrompt">复制</el-button>
@@ -71,7 +73,7 @@
           </el-collapse>
 
           <div v-if="run.error" class="danger-text ai-run-panel__error">{{ run.error }}</div>
-          <div v-if="visibleLogs.length" class="timeline-log ai-run-panel__logs" ref="logBox">
+          <div v-if="visibleLogs.length" class="timeline-log ai-run-panel__logs" ref="logBox" @scroll="onLogScroll">
             <div
               v-for="log in visibleLogs"
               :key="log.seq"
@@ -141,6 +143,8 @@ const draftPrompt = ref('')
 const draftPreview = ref(false)
 const saving = ref(false)
 const expandedSeqs = ref(new Set())
+const stickToBottom = ref(true)
+const SCROLL_BOTTOM_THRESHOLD = 48
 let logTimer = null
 
 const isRunning = computed(() => props.run && ['queued', 'running'].includes(props.run.status))
@@ -212,6 +216,7 @@ watch(
     logLines.value = []
     dialogVisible.value = false
     expandedSeqs.value = new Set()
+    stickToBottom.value = true
     draftPrompt.value = extractPrompt(props.run?.input)
     draftPreview.value = false
     syncPolling()
@@ -227,7 +232,10 @@ watch(
 )
 
 watch(dialogVisible, (visible) => {
-  if (visible) pollLogs()
+  if (visible) {
+    stickToBottom.value = true
+    pollLogs()
+  }
 })
 
 function statusLabel(status) {
@@ -278,6 +286,9 @@ const EVENT_LABEL = {
   prompt: '提示语',
   http_request: 'HTTP 请求',
   http_response: 'HTTP 响应',
+  http_stream: '模型输出',
+  http_thinking: '模型思考',
+  step: '进度',
   json: '事件',
 }
 
@@ -290,9 +301,9 @@ const SYSTEM_SUBTYPE_LABEL = {
 const visibleLogs = computed(() => logLines.value.map(describeLog).filter(Boolean))
 
 function eventClass(eventType) {
-  if (eventType === 'assistant' || eventType === 'result' || eventType === 'http_response') return 'assistant'
+  if (eventType === 'assistant' || eventType === 'result' || eventType === 'http_response' || eventType === 'http_stream' || eventType === 'http_thinking') return 'assistant'
   if (eventType === 'error' || eventType === 'stderr') return 'error'
-  if (['git', 'queue', 'cancel', 'prompt', 'http_request'].includes(eventType)) return 'git'
+  if (['git', 'queue', 'cancel', 'prompt', 'http_request', 'step'].includes(eventType)) return 'git'
   return 'tool'
 }
 
@@ -463,7 +474,25 @@ function describeLog(log) {
 }
 
 function openLogs() {
+  stickToBottom.value = true
   dialogVisible.value = true
+}
+
+function isNearBottom(el) {
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_THRESHOLD
+}
+
+function onLogScroll() {
+  if (logBox.value) {
+    stickToBottom.value = isNearBottom(logBox.value)
+  }
+}
+
+function scrollLogsToBottom() {
+  if (logBox.value) {
+    logBox.value.scrollTop = logBox.value.scrollHeight
+  }
 }
 
 defineExpose({ open: openLogs })
@@ -476,7 +505,7 @@ function syncPolling() {
   if (!props.run) return
   pollLogs()
   if (isRunning.value) {
-    logTimer = setInterval(pollLogs, 2500)
+    logTimer = setInterval(pollLogs, 800)
   }
 }
 
@@ -492,7 +521,7 @@ async function pollLogs() {
       if (added.length) {
         logLines.value = logLines.value.concat(added)
         await nextTick()
-        if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
+        if (stickToBottom.value) scrollLogsToBottom()
       }
     }
   } catch (error) {
@@ -556,6 +585,78 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
+.ai-run-panel__prompt {
+  --el-collapse-header-height: 40px;
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--page-bg);
+}
+
+.ai-run-panel__prompt :deep(.el-collapse-item__header) {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--el-collapse-header-height);
+  padding: 0 12px;
+  background: var(--surface-raised);
+  border-bottom: none;
+  line-height: 1.2;
+}
+
+.ai-run-panel__prompt :deep(.el-collapse-item__wrap) {
+  background: transparent;
+  border-bottom: none;
+}
+
+.ai-run-panel__prompt :deep(.el-collapse-item__content) {
+  padding: 10px 12px 12px;
+}
+
+.ai-run-panel__prompt :deep(.el-collapse-item__title) {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.ai-run-panel__prompt :deep(.el-collapse-item__arrow) {
+  margin: 0 0 0 8px;
+  flex-shrink: 0;
+}
+
+.ai-run-panel__prompt-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+.ai-run-panel__prompt-label {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  white-space: nowrap;
+}
+
+.ai-run-panel__prompt-title .ai-run-panel__prompt-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ai-run-panel__logs {
   min-width: 0;
   max-width: 100%;
@@ -583,7 +684,6 @@ onBeforeUnmount(() => {
 }
 
 .ai-run-panel__prompt-hint {
-  margin-left: 8px;
   font-size: 12px;
 }
 
@@ -591,6 +691,7 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 8px;
   justify-items: start;
+  width: 100%;
 }
 
 .ai-run-panel__prompt-text {
@@ -604,6 +705,12 @@ onBeforeUnmount(() => {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.6;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: #0a0e14;
+  color: #d5dde5;
+  font-family: var(--mono);
 }
 
 .ai-run-panel__draft {

@@ -2,17 +2,25 @@
 
 namespace app\service\AiDev;
 
+use think\facade\Db;
+
 class GenerationExecutorService
 {
     private $lastResultText = null;
     /** @var string[] stream 里历次 result 文本,避免最后一次只是说明性短句而丢掉真正的 JSON */
     private $resultTexts = [];
     private $modelKey = '';
+    /** @var string Claude 流事件中的 session，用于达到轮次上限后的无工具收尾 */
+    private $resumeSessionId = '';
+    /** @var bool 最近一次结果是否因达到 max turns 而结束 */
+    private $maxTurnsExceeded = false;
 
     public function execute($runId)
     {
         $this->lastResultText = null;
         $this->resultTexts = [];
+        $this->resumeSessionId = '';
+        $this->maxTurnsExceeded = false;
         $runService = new RunService();
         $run = $runService->detail($runId);
         if (!$run) {
@@ -28,10 +36,22 @@ class GenerationExecutorService
         }
         $options = isset($payload['options']) && is_array($payload['options']) ? $payload['options'] : [];
         $options['model_profile'] = isset($run['model_name']) ? (string) $run['model_name'] : '';
+        if (!empty($options['finalize_only'])) {
+            $prompt = '前一次计划生成已经完成代码研究。禁止调用任何工具、禁止继续搜索、禁止解释过程。'
+                . '立即只输出原任务要求的最终 JSON 对象，必须包含 plan_markdown，且 plan_markdown 必须是完整可执行的开发计划。';
+            $options['max_turns'] = 4;
+            // 恢复会话的收尾不应再占用完整的计划生成时限；没有首个输出通常表示
+            // 上游会话已悬挂，尽快失败让用户重试或改用新会话。
+            $options['timeout'] = min((int) config('ai_dev.agent.plan_finalize_timeout', 90), 90);
+            $options['allowed_tools'] = '';
+            $options['disallowed_tools'] = $this->finalizationDisallowedTools();
+        }
         $result = $this->runClaude($runId, $prompt, $options, $runService);
+        $runService->assertNotCancelled($runId);
         $data = $this->extractJsonObject($result);
         $applied = $this->applyResult($run, $data);
         $output = is_array($applied) ? $applied : $data;
+        $runService->assertNotCancelled($runId);
         $runService->finish($runId, 'succeeded', json_encode($output, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), '');
     }
 
@@ -46,22 +66,36 @@ class GenerationExecutorService
         $modelKey = isset($options['model_profile']) ? (string) $options['model_profile'] : '';
         $this->modelKey = $modelKey;
 
-        // HTTP 直调档案不起子进程,直接发 /chat/completions。请求/响应全过程由 on_log 落库。
-        if ($modelProfile->isHttp($modelKey)) {
-            $runService->markRunning($runId, 0);
-            $runService->appendLog($runId, 'stdout', 'HTTP 直调档案: ' . $modelKey);
-            $text = (new HttpChatService())->complete(
-                $modelProfile->profile($modelKey),
-                $prompt,
-                [
-                    'timeout' => $timeout,
-                    'on_log' => function ($type, $content) use ($runService, $runId) {
-                        $runService->appendLog($runId, $type, $content);
-                    },
-                ]
-            );
-            return trim($text);
+        if (!$modelProfile->isHttp($modelKey)) {
+            throw new \RuntimeException('生成任务必须使用 HTTP 模型档案: ' . $modelKey);
         }
+
+        $runService->markRunning($runId, 0);
+        $run = $runService->detail($runId);
+        $runType = $run ? (string) $run['run_type'] : 'generic';
+        $streamProfile = in_array($runType, ['ai_review', 'task_plan', 'coding'], true) ? $runType : 'generic';
+        $stepMessage = $runType === 'ai_review'
+            ? '正在流式请求模型进行代码审查…'
+            : ($runType === 'task_plan' ? '正在流式请求模型生成开发计划…' : '正在流式请求模型…');
+        $runService->appendLog($runId, 'stdout', 'HTTP 直调档案: ' . $modelKey);
+        $runService->appendLog($runId, 'step', $stepMessage);
+        $content = trim((new HttpChatService())->complete(
+            $modelProfile->profile($modelKey),
+            $prompt,
+            [
+                'timeout' => $timeout,
+                'stream' => true,
+                'on_log' => function ($type, $content) use ($runService, $runId) {
+                    $runService->appendLog($runId, $type, $content);
+                },
+                'on_stream' => (new HttpStreamLogService())->tracker($runService, $runId, $streamProfile),
+                'should_cancel' => $runService->cancelChecker($runId),
+            ]
+        ));
+        if ($content !== '') {
+            $runService->appendLog($runId, 'step', '模型响应完成，共 ' . mb_strlen($content) . ' 字符');
+        }
+        return $content;
 
         $tempService = new ProcessTempService();
         $tempDir = $tempService->create($cwd, 'generation', $runId);
@@ -71,6 +105,8 @@ class GenerationExecutorService
             $cmd = $modelProfile->buildCommand($modelKey, $promptFile, [
                 'max_turns' => $maxTurns,
                 'allowed_tools' => isset($options['allowed_tools']) ? (string) $options['allowed_tools'] : '',
+                'disallowed_tools' => isset($options['disallowed_tools']) ? (string) $options['disallowed_tools'] : '',
+                'resume_session' => isset($options['resume_session']) ? (string) $options['resume_session'] : '',
                 'edit' => false,
             ]);
 
@@ -91,6 +127,9 @@ class GenerationExecutorService
             $exitCode = -1;
             $termSignal = 0;
             $salvaged = false;
+            $finalizationRetries = 0;
+            $maxFinalizationRetries = 1;
+            $finalizationTurns = 4;
             $stdoutBuf = '';
             $stderrBuf = '';
             $onStdout = function ($line) use ($runService, $runId, &$output) {
@@ -112,6 +151,59 @@ class GenerationExecutorService
                     $exitCode = $status['exitcode'];
                     if (!empty($status['signaled'])) {
                         $termSignal = (int) $status['termsig'];
+                    }
+                    // 进程退出时最后一条 result 可能仍在管道缓冲区，先读取再判断原因。
+                    $this->drainPipe($pipes[1], $stdoutBuf, $onStdout);
+                    $this->drainPipe($pipes[2], $stderrBuf, $onStderr);
+                    if ($stdoutBuf !== '') {
+                        $onStdout($stdoutBuf);
+                        $stdoutBuf = '';
+                    }
+                    if ($stderrBuf !== '') {
+                        $onStderr($stderrBuf);
+                        $stderrBuf = '';
+                    }
+                    if ($this->maxTurnsExceeded
+                        && $finalizationRetries < $maxFinalizationRetries
+                        && $this->resumeSessionId !== ''
+                        && $modelProfile->agentType($modelKey) === 'claude'
+                        && time() - $startedAt < $timeout
+                    ) {
+                        $finalizationRetries++;
+                        fclose($pipes[1]);
+                        fclose($pipes[2]);
+                        proc_close($process);
+                        $runService->appendLog(
+                            $runId,
+                            'retry',
+                            '达到研究轮次上限，复用原会话进入无工具 JSON 收尾阶段 ' . $finalizationRetries . '/' . $maxFinalizationRetries
+                        );
+                        $finalPrompt = "你已经完成前序代码阅读。现在禁止调用任何工具、禁止继续搜索、禁止解释过程。"
+                            . "只基于当前会话中已有证据，立即输出原任务要求的最终 JSON 对象；必须包含原约定的业务字段。";
+                        $finalFile = $tempService->writeFile($tempDir, 'finalize-' . $finalizationRetries . '.md', $finalPrompt);
+                        $finalOptions = [
+                            'max_turns' => $finalizationTurns,
+                            'allowed_tools' => '',
+                            'disallowed_tools' => $this->finalizationDisallowedTools(),
+                            'resume_session' => $this->resumeSessionId,
+                            'edit' => false,
+                        ];
+                        $cmd = $modelProfile->buildCommand($modelKey, $finalFile, $finalOptions);
+                        $process = proc_open($cmd, $descriptors, $pipes, $cwd, $modelProfile->processEnv($modelKey, $tempDir));
+                        if (!is_resource($process)) {
+                            throw new \RuntimeException('计划生成收尾子进程启动失败');
+                        }
+                        $restartStatus = proc_get_status($process);
+                        Db::name('ai_dev_runs')->where('id', $runId)->update(['pid' => (int) $restartStatus['pid']]);
+                        fclose($pipes[0]);
+                        stream_set_blocking($pipes[1], false);
+                        stream_set_blocking($pipes[2], false);
+                        $stdoutBuf = '';
+                        $stderrBuf = '';
+                        $exitCode = -1;
+                        $termSignal = 0;
+                        $this->maxTurnsExceeded = false;
+                        continue;
                     }
                     break;
                 }
@@ -163,10 +255,17 @@ class GenerationExecutorService
 
         if (!$salvaged && $exitCode !== 0) {
             $message = $this->buildFailureMessage($exitCode, $termSignal, $error);
-            $runService->appendLog($runId, 'error', $message);
             throw new \RuntimeException($message);
         }
         return $this->pickResultText($output);
+    }
+
+    /**
+     * Claude Code 在恢复会话时会暴露独立的 Task/Cron 工具；只禁用泛称 Task 无法阻止它们。
+     */
+    private function finalizationDisallowedTools()
+    {
+        return 'Read,Glob,Grep,Bash,WebFetch,WebSearch,Write,Edit,NotebookEdit,Task,TaskCreate,TaskGet,TaskList,TaskOutput,TaskStop,TaskUpdate,CronCreate,CronDelete,CronList,ScheduleWakeup,SendMessage,ReportFindings,EnterWorktree,ExitWorktree,DesignSync,Skill,Workflow';
     }
 
     private function applyResult(array $run, array $data)
@@ -218,6 +317,12 @@ class GenerationExecutorService
         $event = json_decode($line, true);
         if (is_array($event)) {
             $type = isset($event['type']) ? $event['type'] : 'json';
+            if (!empty($event['session_id'])) {
+                $this->resumeSessionId = (string) $event['session_id'];
+            }
+            if ($type === 'result' && isset($event['subtype']) && $event['subtype'] === 'error_max_turns') {
+                $this->maxTurnsExceeded = true;
+            }
             $resultText = (new ModelProfileService())->streamResultText($this->modelKey, $event);
             if ($resultText !== null) {
                 $text = trim((string) $resultText);
@@ -248,7 +353,8 @@ class GenerationExecutorService
         if (!$candidates) {
             return '';
         }
-        $markers = ['plan_markdown', 'spec_markdown', 'breakdown_markdown', 'commit_message', 'branch_name', 'blocking_issues'];
+        // 生成类任务的最终业务字段必须全部在此，否则会因工具事件 JSON 更长而误选日志。
+        $markers = ['plan_markdown', 'spec_markdown', 'breakdown_markdown', 'description', 'commit_message', 'branch_name', 'blocking_issues'];
         foreach ($candidates as $text) {
             foreach ($markers as $marker) {
                 if (strpos($text, '"' . $marker . '"') !== false) {
@@ -277,7 +383,14 @@ class GenerationExecutorService
         for ($i = count($logs) - 1; $i >= 0; $i--) {
             $content = isset($logs[$i]['content']) ? (string) $logs[$i]['content'] : '';
             $event = json_decode($content, true);
-            if (!is_array($event) || empty($event['result'])) {
+            if (!is_array($event)) {
+                continue;
+            }
+            $toolResult = $this->parseReportFindingsEvent($event);
+            if ($toolResult !== null) {
+                return $toolResult;
+            }
+            if (empty($event['result'])) {
                 continue;
             }
             try {
@@ -288,6 +401,43 @@ class GenerationExecutorService
             } catch (\RuntimeException $e) {
                 continue;
             }
+        }
+        return null;
+    }
+
+    /** 兼容旧版 Review 会话调用 ReportFindings 后没有输出最终 JSON 的情况。 */
+    private function parseReportFindingsEvent(array $event)
+    {
+        $blocks = [];
+        foreach (['content', 'message'] as $key) {
+            if (isset($event[$key]) && is_array($event[$key])) {
+                $blocks = array_merge($blocks, isset($event[$key]['content']) && is_array($event[$key]['content'])
+                    ? $event[$key]['content']
+                    : $event[$key]);
+            }
+        }
+        foreach ($blocks as $block) {
+            if (!is_array($block) || ($block['name'] ?? '') !== 'ReportFindings') {
+                continue;
+            }
+            $input = isset($block['input']) && is_array($block['input']) ? $block['input'] : [];
+            $findings = isset($input['findings']) && is_array($input['findings']) ? $input['findings'] : [];
+            $blocking = [];
+            foreach ($findings as $finding) {
+                if (is_string($finding) && trim($finding) !== '') {
+                    $blocking[] = trim($finding);
+                } elseif (is_array($finding)) {
+                    $blocking[] = trim((string) ($finding['description'] ?? $finding['message'] ?? json_encode($finding, JSON_UNESCAPED_UNICODE)));
+                }
+            }
+            return [
+                'status' => $blocking ? 'fail' : 'pass',
+                'risk_level' => $blocking ? 'high' : 'low',
+                'summary' => $blocking ? 'AI Review 发现待处理问题。' : 'AI Review 未发现阻塞问题。',
+                'blocking_issues' => $blocking,
+                'warnings' => [],
+                'suggestions' => [],
+            ];
         }
         return null;
     }
@@ -373,6 +523,12 @@ class GenerationExecutorService
                 return $data;
             }
         }
+        // 项目描述偶尔会在 JSON 字符串内写未转义的双引号，如
+        // {"description":"项目"橙啦"是..."}。外壳与唯一字段仍明确时可安全恢复。
+        $description = $this->recoverDescriptionResult($cleaned);
+        if (is_array($description)) {
+            return $description;
+        }
         $start = strpos($cleaned, '{');
         if ($start !== false) {
             $fromStart = substr($cleaned, $start);
@@ -386,6 +542,21 @@ class GenerationExecutorService
             return $data;
         }
         return $this->recoverReviewResult($cleaned);
+    }
+
+    private function recoverDescriptionResult($raw)
+    {
+        $text = trim((string) $raw);
+        if (!preg_match('/^\{\s*"description"\s*:\s*"([\s\S]*)"\s*\}\s*$/u', $text, $matches)) {
+            return null;
+        }
+        $description = str_replace(
+            ['\\n', '\\r', '\\t', '\\/','\\"', '\\\\'],
+            ["\n", "\r", "\t", '/', '"', '\\'],
+            (string) $matches[1]
+        );
+        $description = trim($description);
+        return $description === '' ? null : ['description' => $description];
     }
 
     /** AI Review 偶发输出 summary 键名损坏的 JSON,回退用正则提取各列表字段。 */

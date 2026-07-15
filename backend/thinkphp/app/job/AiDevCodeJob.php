@@ -2,7 +2,7 @@
 
 namespace app\job;
 
-use app\service\AiDev\AgentExecutorService;
+use app\service\AiDev\HttpCodeExecutorService;
 use app\service\AiDev\RunService;
 use think\queue\Job;
 
@@ -20,7 +20,7 @@ class AiDevCodeJob
                 return;
             }
             $runService->appendLog($runId, 'queue', 'Worker 领取 AI 编码任务');
-            (new AgentExecutorService())->execute($runId);
+            (new HttpCodeExecutorService())->execute($runId);
             $job->delete();
         } catch (\Throwable $e) {
             $run = $runService->detail($runId);

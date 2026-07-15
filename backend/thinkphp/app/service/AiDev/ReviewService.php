@@ -6,6 +6,12 @@ use think\facade\Db;
 
 class ReviewService
 {
+    /** 允许发起自动/AI Review 的工单状态（含待提交，便于人工改码后重新 Review）。 */
+    private function reviewableStatuses()
+    {
+        return ['code_changed', 'review_passed', 'review_failed', 'ready_to_commit'];
+    }
+
     /**
      * 自动 Review：在 worktree 里跑项目配置的 lint/test/build。
      * 通过 → review_passed（等待人工确认），失败 → review_failed。
@@ -18,7 +24,7 @@ class ReviewService
         if (!$task || !$change) {
             throw new \RuntimeException('没有可 Review 的代码改动');
         }
-        if (!in_array($task['status'], ['code_changed', 'review_passed', 'review_failed'], true)) {
+        if (!in_array($task['status'], $this->reviewableStatuses(), true)) {
             throw new \RuntimeException('当前状态不能发起 Review');
         }
         $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
@@ -31,11 +37,12 @@ class ReviewService
         (new CommandSafetyService())->assertProjectChecks($project);
         list($testResult, $failedCommands, $checkedCommands) = $this->runConfiguredChecks($project, $worktree);
         $hasChecks = count($checkedCommands) > 0;
-        $pass = $hasChecks && count($failedCommands) === 0;
+        // 未配置检查命令代表“跳过自动检查”，不是代码缺陷，不能阻塞 Review。
+        $pass = count($failedCommands) === 0;
         $result = [
             'status' => $pass ? 'pass' : 'fail',
             'risk_level' => $pass ? 'low' : 'high',
-            'blocking_issues' => !$hasChecks ? ['项目未配置 lint/test/build 检查命令，无法完成自动 Review'] : array_map(function ($cmd) {
+            'blocking_issues' => array_map(function ($cmd) {
                 return "检查命令执行失败：{$cmd}";
             }, $failedCommands),
             'warnings' => [],
@@ -44,7 +51,7 @@ class ReviewService
                 ? '自动检查通过，请人工 Review diff 后确认通过或驳回。'
                 : ($hasChecks
                     ? '自动检查未通过，请查看检查输出并让 AI 继续修改。'
-                    : '未配置自动检查命令，请先在项目配置中补充 lint/test/build 命令，或人工核对后再处理。'),
+                    : '未配置自动检查命令，已跳过自动检查，请人工 Review diff 后确认通过或驳回。'),
         ];
         $id = Db::name('ai_dev_reviews')->insertGetId([
             'task_id' => $taskId,
@@ -70,7 +77,7 @@ class ReviewService
         if (!$task || !$change) {
             throw new \RuntimeException('没有可 Review 的代码改动');
         }
-        if (!in_array($task['status'], ['code_changed', 'review_passed', 'review_failed'], true)) {
+        if (!in_array($task['status'], $this->reviewableStatuses(), true)) {
             throw new \RuntimeException('当前状态不能发起 AI Review');
         }
         $project = Db::name('ai_dev_projects')->where('id', $task['project_id'])->find();
@@ -95,6 +102,7 @@ class ReviewService
                 'timeout' => (int) config('ai_dev.agent.review_timeout', 900),
                 'max_turns' => 16,
                 'allowed_tools' => 'Read,Glob,Grep,Bash(git diff:*),Bash(git status:*),Bash(git show:*)',
+                'disallowed_tools' => 'Edit,Write,NotebookEdit,Task,TaskCreate,TaskUpdate,ReportFindings,WebSearch,WebFetch',
             ],
         ], 'task:' . (int) $taskId, $model, $draft);
         // 草稿不改工单状态,reviewing 推迟到 executeDraft 时再设。
@@ -126,9 +134,6 @@ class ReviewService
         }
         (new CommandSafetyService())->assertProjectChecks($project);
         list($testResult, $failedCommands, $checkedCommands) = $this->runConfiguredChecks($project, $worktree);
-        if (!$checkedCommands) {
-            $result['blocking_issues'][] = '项目未配置 lint/test/build 检查命令，AI 代码判断不能替代可执行验证';
-        }
         foreach ($failedCommands as $command) {
             $result['blocking_issues'][] = '检查命令执行失败: ' . $command;
         }
@@ -137,7 +142,7 @@ class ReviewService
             $result['status'] = 'fail';
             $result['risk_level'] = 'high';
         }
-        $pass = $result['status'] === 'pass' && (bool) $checkedCommands && !$failedCommands;
+        $pass = $result['status'] === 'pass' && !$failedCommands;
 
         $id = Db::name('ai_dev_reviews')->insertGetId([
             'task_id' => $taskId,
@@ -194,6 +199,10 @@ class ReviewService
                 $normalized['status'] = 'human_reject';
             }
             if (!$this->resultHasContent($normalized)) {
+                continue;
+            }
+            // warnings/suggestions 只用于人工参考，不能单独触发 fix 轮次。
+            if (!$this->isHumanReviewStatus($review['status']) && empty($normalized['blocking_issues'])) {
                 continue;
             }
             if ($review['status'] === 'human_reject' && $this->isShellHumanReject($normalized)) {
@@ -413,26 +422,18 @@ class ReviewService
                 $failed[] = $project[$field];
             }
         }
-        if (!$checked) {
-            $parts[] = '未配置 lint/test/build 检查命令，未执行任何自动检查。';
-        }
         return [implode("\n\n", $parts), $failed, $checked];
     }
 
     private function refreshChangeSnapshot(array $change, $worktree)
     {
         exec('git -C ' . escapeshellarg($worktree) . ' add -A -N');
-        $files = [];
-        $diffLines = [];
-        exec('git -C ' . escapeshellarg($worktree) . ' diff HEAD --name-only', $files, $filesCode);
-        exec('git -C ' . escapeshellarg($worktree) . ' diff HEAD', $diffLines, $diffCode);
-        if ($filesCode !== 0 || $diffCode !== 0) {
-            throw new \RuntimeException('读取 Review 代码快照失败');
-        }
+        $git = new GitWorktreeService();
+        $files = $git->lines($worktree, ['diff', 'HEAD', '--name-only']);
+        $snapshot = $git->output($worktree, ['diff', 'HEAD']);
         if (!$files) {
             throw new \RuntimeException('当前 worktree 没有可 Review 的代码改动');
         }
-        $snapshot = implode("\n", $diffLines);
         Db::name('ai_dev_changes')->where('id', (int) $change['id'])->update([
             'changed_files' => json_encode($files, JSON_UNESCAPED_UNICODE),
             'git_diff_snapshot' => $snapshot,
@@ -449,7 +450,7 @@ class ReviewService
         return "你是资深代码审查员。禁止修改任何文件。除 git diff/status/show 这三个只读命令外禁止执行其他命令。\n"
             . "必须先执行 `git status --short --untracked-files=no` 和 `git diff HEAD` 阅读当前 worktree 相对基准提交的完整实际改动（包括已暂存内容），不能只抽查文件；再读取相关调用方、类型定义和测试代码核对上下文。\n"
             . "逐条对照需求/验收编号、项目职责和已确认计划，检查遗漏实现、错误业务逻辑、空值与异常分支、接口契约偏差、兼容性、越界修改和测试缺口。\n"
-            . "status=pass 仅表示没有必须修改的问题；任何会导致需求不满足、运行错误、数据错误、接口不兼容或无法验证的事项都必须放入 blocking_issues 并返回 fail。\n"
+            . "status=pass 仅表示没有必须修改的问题；任何会导致需求不满足、运行错误、数据错误或接口不兼容的事项都必须放入 blocking_issues 并返回 fail。\n"
             . "blocking_issues 每项必须写成『[文件:行号或符号] 问题 | 影响 | 建议修复』，不得只写笼统结论；无法确认时写明缺少的证据。\n"
             . "只返回 JSON，不要 Markdown，不要解释 JSON 以外的内容。结构固定为：\n"
             . "{\"status\":\"pass|fail\",\"risk_level\":\"low|medium|high\",\"summary\":\"一句话结论\","

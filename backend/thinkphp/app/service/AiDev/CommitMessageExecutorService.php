@@ -28,8 +28,10 @@ class CommitMessageExecutorService
         $options = isset($payload['options']) && is_array($payload['options']) ? $payload['options'] : [];
         $options['model_profile'] = isset($run['model_name']) ? (string) $run['model_name'] : '';
         $result = $this->runClaude($runId, $prompt, $options, $runService);
+        $runService->assertNotCancelled($runId);
         $data = $this->extractJsonObject($result);
         $result = (new CommitService())->finishMessageRun($run, $data);
+        $runService->assertNotCancelled($runId);
         $runService->finish($runId, 'succeeded', json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), '');
     }
 
@@ -44,22 +46,23 @@ class CommitMessageExecutorService
         $modelKey = isset($options['model_profile']) ? (string) $options['model_profile'] : '';
         $this->modelKey = $modelKey;
 
-        // HTTP 直调档案不起子进程,直接发 /chat/completions。请求/响应全过程由 on_log 落库。
-        if ($modelProfile->isHttp($modelKey)) {
-            $runService->markRunning($runId, 0);
-            $runService->appendLog($runId, 'stdout', 'HTTP 直调档案: ' . $modelKey);
-            $text = (new HttpChatService())->complete(
-                $modelProfile->profile($modelKey),
-                $prompt,
-                [
-                    'timeout' => $timeout,
-                    'on_log' => function ($type, $content) use ($runService, $runId) {
-                        $runService->appendLog($runId, $type, $content);
-                    },
-                ]
-            );
-            return trim($text);
+        if (!$modelProfile->isHttp($modelKey)) {
+            throw new \RuntimeException('Commit message 任务必须使用 HTTP 模型档案: ' . $modelKey);
         }
+
+        $runService->markRunning($runId, 0);
+        $runService->appendLog($runId, 'stdout', 'HTTP 直调档案: ' . $modelKey);
+        return trim((new HttpChatService())->complete(
+            $modelProfile->profile($modelKey),
+            $prompt,
+            [
+                'timeout' => $timeout,
+                'on_log' => function ($type, $content) use ($runService, $runId) {
+                    $runService->appendLog($runId, $type, $content);
+                },
+                'should_cancel' => $runService->cancelChecker($runId),
+            ]
+        ));
 
         $tempService = new ProcessTempService();
         $tempDir = $tempService->create($cwd, 'commit-message', $runId);
@@ -135,7 +138,6 @@ class CommitMessageExecutorService
 
         if ($exitCode !== 0) {
             $message = $this->buildFailureMessage($exitCode, $termSignal, $error);
-            $runService->appendLog($runId, 'error', $message);
             throw new \RuntimeException($message);
         }
         if ($this->lastResultText !== null) {

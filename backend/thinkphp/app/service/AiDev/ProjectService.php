@@ -45,21 +45,36 @@ class ProjectService
         if ($path === '' || !is_dir($path)) {
             throw new \RuntimeException('项目目录不存在: ' . $path);
         }
-        $prompt = "阅读当前项目仓库(至少检查 README、依赖清单、路由/入口、主要目录和已有 API 或页面),"
-            . "用 120 到 200 字中文说明:项目用途、技术栈、主要交付边界、对外提供或消费的能力,以及它明确不负责什么。"
-            . "描述将用于研发负责人判断需求应分配给哪个项目,不要只罗列框架名称,不要根据仓库中不存在的内容猜测。"
-            . "只返回 JSON,结构:{\"description\":\"...\"},不要 JSON 以外的内容。";
-        return (new RunService())->enqueueGeneration(0, 'project_description', [
+        return (new RunService())->enqueueGeneration(
+            0,
+            'project_description',
+            $this->describePayload($path),
+            'project_path:' . sha1($path),
+            $model,
+            $draft
+        );
+    }
+
+    /** 集中构造轻量描述任务，新建与失败重试共用，避免重试复制旧执行预算。 */
+    public function describePayload($path)
+    {
+        $snapshot = (new RepositorySnapshotService())->build($path);
+        $prompt = "根据下方由系统预先采集的有界仓库快照，直接生成项目描述。不得调用任何工具，不得继续探索仓库。"
+            . "用 120 到 300 字中文说明:项目用途、技术栈、主要交付边界、对外提供或消费的能力,以及它明确不负责什么。"
+            . "描述将用于研发负责人判断需求应分配给哪个项目,不要只罗列框架名称,不要根据快照中不存在的内容猜测。"
+            . "只返回 JSON,结构:{\"description\":\"...\"},不要 JSON 以外的内容。description 内不得使用中英文双引号，项目名用书名号。\n\n# 仓库快照\n" . $snapshot;
+        return [
             'operation' => 'project_description',
             'path' => $path,
             'prompt' => $prompt,
             'options' => [
                 'cwd' => $path,
                 'timeout' => 180,
-                'max_turns' => 12,
-                'allowed_tools' => 'Read,Glob,Grep',
+                'max_turns' => 2,
+                // 快照已包含所需证据，模型只做单轮总结，彻底杜绝自由遍历。
+                'disallowed_tools' => 'Read,Glob,Grep,Bash,WebFetch,WebSearch,Write,Edit,NotebookEdit,Skill,Workflow',
             ],
-        ], 'project_path:' . sha1($path), $model, $draft);
+        ];
     }
 
     public function finishDescribeRun(array $run, array $data)

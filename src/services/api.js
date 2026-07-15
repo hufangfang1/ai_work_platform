@@ -126,7 +126,6 @@ export const api = {
     modelOptions: () => request('GET', '/model-options'),
     saveModel: (body) => request('PUT', '/model-config', body),
     saveModelProfiles: (profiles) => request('PUT', '/model-profiles', { profiles }),
-    refreshModelProfiles: () => request('POST', '/model-profiles/refresh'),
     securityRules: () => request('GET', '/security-rules'),
     saveSecurityRules: (rules) => request('PUT', '/security-rules', { rules }),
     exportConfig: () => request('GET', '/config-export'),

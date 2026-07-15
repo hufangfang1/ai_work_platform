@@ -33,9 +33,6 @@ class RunService
             throw new \RuntimeException('依赖工单 AI Review 未通过,暂不能开始 AI 修改: ' . implode('、', $names));
         }
         $modelKey = (new ModelProfileService())->resolveKey('coding', $model);
-        if ((new ModelProfileService())->isHttp($modelKey)) {
-            throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
-        }
         $run = $this->createRun($taskId, 'coding', $this->buildPrompt($task, $plan, $project, ''), 'plan:' . (int) $plan['id'], $modelKey);
         return $this->dispatchOrDraft($run, 'app\job\AiDevCodeJob', $taskId, 'coding', $draft);
     }
@@ -55,9 +52,6 @@ class RunService
             throw new \RuntimeException('项目不存在');
         }
         $modelKey = (new ModelProfileService())->resolveKey('fix', $model);
-        if ((new ModelProfileService())->isHttp($modelKey)) {
-            throw new \RuntimeException('编码步骤不支持 HTTP 直调档案,请选择 CLI 档案(claude/codex/cursor)');
-        }
         $latestChange = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('id', 'desc')->find();
         $run = $this->createRun(
             $taskId,
@@ -214,7 +208,7 @@ class RunService
             return;
         }
         if ($runType === 'ai_review' && is_array($payload)) {
-            if (!in_array($task['status'], ['code_changed', 'review_passed', 'review_failed'], true)) {
+            if (!in_array($task['status'], ['code_changed', 'review_passed', 'review_failed', 'ready_to_commit'], true)) {
                 throw new \RuntimeException('工单状态已变化，Review 草稿不能再执行');
             }
             $change = Db::name('ai_dev_changes')->where('task_id', $taskId)->order('id', 'desc')->find();
@@ -268,8 +262,33 @@ class RunService
         ]);
     }
 
+    public function isCancelled($runId)
+    {
+        $run = $this->detail($runId);
+        return $run && $run['status'] === 'cancelled';
+    }
+
+    public function assertNotCancelled($runId)
+    {
+        if ($this->isCancelled($runId)) {
+            throw new \RuntimeException('人工取消执行');
+        }
+    }
+
+    /** @return callable(): bool */
+    public function cancelChecker($runId)
+    {
+        $self = $this;
+        return function () use ($self, $runId) {
+            return $self->isCancelled($runId);
+        };
+    }
+
     public function finish($runId, $status, $output = '', $error = '')
     {
+        if ($this->isCancelled($runId)) {
+            return;
+        }
         Db::name('ai_dev_runs')->where('id', $runId)->update([
             'status' => $status,
             'output' => $output,
@@ -379,7 +398,17 @@ class RunService
             return $this->detail($runId);
         }
         $input = (string) $run['input'];
-        if ($run['run_type'] === 'ai_review') {
+        if ($run['run_type'] === 'project_description') {
+            $decoded = json_decode($input, true);
+            $path = is_array($decoded) && isset($decoded['path']) ? (string) $decoded['path'] : '';
+            if ($path !== '' && is_dir($path)) {
+                $input = json_encode((new ProjectService())->describePayload($path), JSON_UNESCAPED_UNICODE);
+            }
+            // 旧 run 未显式选模型时，重试应使用当前步骤默认，不再落回 CLI 全局模型。
+            if ($modelOverride === null && trim((string) $modelName) === '') {
+                $modelName = (new ModelProfileService())->resolveKey($run['run_type']);
+            }
+        } elseif ($run['run_type'] === 'ai_review') {
             $decoded = json_decode($input, true);
             if (is_array($decoded)) {
                 if (!isset($decoded['options']) || !is_array($decoded['options'])) {
@@ -389,6 +418,34 @@ class RunService
                 $decoded['options']['max_turns'] = 16;
                 $input = json_encode($decoded, JSON_UNESCAPED_UNICODE);
             }
+        }
+        if ($run['run_type'] === 'task_plan') {
+            $decoded = json_decode($input, true);
+            if (is_array($decoded)) {
+                if (!isset($decoded['options']) || !is_array($decoded['options'])) {
+                    $decoded['options'] = [];
+                }
+                $sessionId = $this->findRunSessionId((int) $run['id']);
+                if ($sessionId !== '') {
+                    // 旧 run 已完成研究但因 max turns/超时未输出 JSON 时，直接原会话收尾。
+                    $decoded['options']['resume_session'] = $sessionId;
+                    $decoded['options']['finalize_only'] = true;
+                } else {
+                    $decoded['options']['max_turns'] = 18;
+                    $decoded['options']['timeout'] = (int) config('ai_dev.agent.plan_timeout', 1200);
+                }
+                $input = json_encode($decoded, JSON_UNESCAPED_UNICODE);
+            }
+        }
+        if (in_array($run['run_type'], ['coding', 'fix'], true)) {
+            // 旧 run 可能未保存模型选择；重试必须采用当前步骤默认，不能再次静默回退全局重模型。
+            if ($modelOverride === null && trim((string) $modelName) === '') {
+                $modelName = (new ModelProfileService())->resolveKey($run['run_type']);
+            }
+            // worktree 会被复用，先给接续约束，避免新会话无视已有 diff 后重新探索/重做。
+            $input = "# 失败运行接续 source_run_id=" . (int) $run['id'] . "\n这是同一任务的续跑，worktree 中可能已有部分修改。保留正确改动，先查看已有变更文件；"
+                . "最多补充 3 次必要读取后直接完成剩余计划，禁止重新规划、创建 Task 或重复大范围探索。\n\n"
+                . $input;
         }
         $newRun = $this->createRun(
             (int) $run['task_id'],
@@ -423,6 +480,24 @@ class RunService
         $this->appendLog((int) $run['id'], 'recover', '已从历史模型输出恢复 commit message');
         $this->finish((int) $run['id'], 'succeeded', json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), '');
         return true;
+    }
+
+    /** 从失败生成 run 的流事件恢复 Claude session，用于无工具 JSON 收尾。 */
+    private function findRunSessionId($runId)
+    {
+        $logs = Db::name('ai_dev_run_logs')
+            ->where('run_id', (int) $runId)
+            ->order('seq', 'desc')
+            ->limit(200)
+            ->select()
+            ->toArray();
+        foreach ($logs as $log) {
+            $event = json_decode((string) $log['content'], true);
+            if (is_array($event) && !empty($event['session_id'])) {
+                return (string) $event['session_id'];
+            }
+        }
+        return '';
     }
 
     private function extractGenerationDataFromLogs($runId)
@@ -479,21 +554,30 @@ class RunService
 
     private function buildCodingPrompt(array $task, array $plan, array $project)
     {
-        $prompt = "# 任务\n严格按以下已确认开发计划完成代码修改，并用可复现检查验证结果。\n\n";
+        $prompt = "# 任务\n进入执行模式：严格按以下已确认开发计划完成代码修改，并用可复现检查验证结果。禁止重新规划。\n\n";
         $prompt .= (new TaskService())->projectContext($task) . "\n\n";
         if (!empty($task['scope_summary'])) {
             $prompt .= "# 本项目职责（来自需求拆解）\n" . $task['scope_summary'] . "\n\n";
         }
         $prompt .= "# 已确认的开发计划\n" . $plan['plan_content'] . "\n\n";
         $prompt .= "# 执行要求\n"
-            . "1. 修改前先读取计划涉及的真实文件和相邻实现，确认现有架构、调用链和约定；计划与代码冲突时以代码事实为准，并在最终 unresolved_risks 说明，不要静默改需求。\n"
-            . "2. 逐条落实计划中的需求/验收编号；只改本项目职责和计划覆盖的文件，不顺手重构无关代码，不新增需求未要求的功能。\n"
-            . "3. 优先复用已有服务、组件、类型、错误处理和测试模式；新增接口或字段必须与已确认契约一致。\n"
-            . "4. 为新增/修改行为补充必要测试；完成后运行下方已配置检查。检查失败时继续定位修复，无法修复则如实写入 unresolved_risks。\n"
-            . "5. 禁止执行 git commit、git push，不要修改需求和计划文档。\n\n"
+            . $this->codingExecutionRules()
             . $this->projectChecksPrompt($project) . "\n";
         $prompt .= $this->codingOutputConstraints();
         return $prompt;
+    }
+
+    /** 编码阶段是计划的执行器，不再允许模型建立第二套任务/计划系统。 */
+    private function codingExecutionRules()
+    {
+        return "1. 已确认计划就是唯一执行清单，禁止重新拆解、重新规划或创建/维护 Task；直接按计划顺序实施。\n"
+            . "2. 首轮探索最多 8 次 Read/Glob/Grep，只读取计划明确涉及的文件及其直接调用方/同类实现；不存在代码事实冲突时不得扩大搜索范围，随后必须开始编辑。\n"
+            . "3. 修改前确认必要的真实代码约定；计划与代码冲突时以代码事实为准，并在最终 unresolved_risks 说明，不得静默改变需求。\n"
+            . "4. 逐条落实计划中的需求/验收编号；只改本项目职责和计划覆盖的文件，不顺手重构，不新增需求未要求的功能。\n"
+            . "5. 优先复用已有服务、类型、错误处理和测试模式；新增接口或字段必须与已确认契约一致。\n"
+            . "6. 只运行下方明确配置并已授权的检查命令；未配置时不要尝试其他 Bash 命令，改做静态核对并记录风险。\n"
+            . "7. 工具调用和说明保持精简：独立的读取/搜索应在同一轮并行发出；大文件按所需区间读取，每次通常不超过 200 行；不要重复读取未变化文件或输出中间总结。\n"
+            . "8. 禁止执行 git commit、git push，不要修改需求和计划文档。\n\n";
     }
 
     private function buildFixPrompt(array $task, array $plan, array $project, $feedback)
@@ -530,7 +614,7 @@ class RunService
             $lines[] = "- {$label}: `{$command}`";
         }
         if (!$configured) {
-            $lines[] = '- 未配置。请至少做静态代码核对，并在 unresolved_risks 明确说明无法自动验证。';
+            $lines[] = '- 未配置，跳过自动检查；不要搜索 vendor 中的测试框架或尝试 Bash。';
         }
         return implode("\n", $lines) . "\n";
     }
@@ -553,7 +637,11 @@ class RunService
         if ($run['run_type'] === 'coding' || $run['run_type'] === 'fix') {
             $status = $run['run_type'] === 'fix' ? 'review_failed' : 'plan_confirmed';
         } elseif ($run['run_type'] === 'ai_review') {
-            $status = 'code_changed';
+            $hasHumanPass = Db::name('ai_dev_reviews')
+                ->where('task_id', $taskId)
+                ->where('status', 'human_pass')
+                ->count() > 0;
+            $status = $hasHumanPass ? 'ready_to_commit' : 'code_changed';
         }
         if ($status !== '') {
             (new TaskService())->updateStatus($taskId, $status);

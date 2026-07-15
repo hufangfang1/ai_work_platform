@@ -71,7 +71,6 @@ Route::group('api/ai-dev', function () {
     Route::get('model-options', 'AiDev.ConfigController/modelOptions');
     Route::put('model-config', 'AiDev.ConfigController/saveModel');
     Route::put('model-profiles', 'AiDev.ConfigController/saveModelProfiles');
-    Route::post('model-profiles/refresh', 'AiDev.ConfigController/refreshModelProfiles');
     Route::get('security-rules', 'AiDev.ConfigController/securityRules');
     Route::put('security-rules', 'AiDev.ConfigController/saveSecurityRules');
     Route::get('config-export', 'AiDev.ConfigController/exportConfig');

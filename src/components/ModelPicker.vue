@@ -10,8 +10,8 @@
   >
     <el-option-group
       v-for="group in groupedModels"
-      :key="group.agent"
-      :label="group.agent"
+      :key="group.tier"
+      :label="group.label"
     >
       <el-option
         v-for="item in group.models"
@@ -91,22 +91,18 @@ const placeholder = computed(() => {
   return found ? `默认(${found.label})` : '默认模型'
 })
 
-// coding/fix 步骤需要 CLI 的 agent loop,http 直调档案不可用,过滤掉。
-const CODING_STEPS = ['coding', 'fix']
-
 const groupedModels = computed(() => {
   const groups = []
   const index = new Map()
-  const isCodingStep = CODING_STEPS.includes(props.step)
   for (const item of models.value) {
-    if (isCodingStep && (item.agent || '') === 'http') continue
-    const agent = item.agent || 'default'
-    if (!index.has(agent)) {
-      const group = { agent, models: [] }
+    const tier = item.tier || 'medium'
+    if (!index.has(tier)) {
+      const labels = { complex: '复杂模型', medium: '中等模型', simple: '简单模型' }
+      const group = { tier, label: labels[tier] || tier, models: [] }
       groups.push(group)
-      index.set(agent, group)
+      index.set(tier, group)
     }
-    index.get(agent).models.push(item)
+    index.get(tier).models.push(item)
   }
   return groups
 })

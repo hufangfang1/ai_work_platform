@@ -14,6 +14,99 @@ class WorktreeService
         return dirname(rtrim($project['local_path'], '/')) . '/' . $prefix . $task['id'];
     }
 
+    /** 编码前确保 worktree 存在且位于工单分支；分支不一致时强制重建。 */
+    public function ensure(array $project, array $task, RunService $runService = null, $runId = 0)
+    {
+        $repoPath = rtrim($project['local_path'], '/');
+        if (!is_dir($repoPath . '/.git')) {
+            throw new \RuntimeException('项目本地目录不是 git 仓库');
+        }
+
+        $expectedBranch = trim((string) $task['final_branch_name']);
+        if ($expectedBranch === '' || trim((string) $task['base_branch']) === '') {
+            throw new \RuntimeException('工单分支名或基准分支为空');
+        }
+
+        $worktree = $this->path($project, $task);
+        if (is_dir($worktree)) {
+            $branchLines = [];
+            exec('git -C ' . escapeshellarg($worktree) . ' rev-parse --abbrev-ref HEAD 2>/dev/null', $branchLines, $branchCode);
+            $actualBranch = $branchCode === 0 && isset($branchLines[0]) ? trim((string) $branchLines[0]) : '';
+            if ($actualBranch === $expectedBranch) {
+                return $worktree;
+            }
+            $message = "worktree 分支 {$actualBranch} 与工单 {$expectedBranch} 不一致，将重建 worktree";
+            if ($runService && $runId > 0) {
+                $runService->appendLog($runId, 'git', $message);
+            }
+            $this->remove($project, $task, true);
+        }
+
+        if ((bool) config('ai_dev.safety.require_clean_repo', false)) {
+            $statusLines = [];
+            exec('git -C ' . escapeshellarg($repoPath) . ' status --porcelain', $statusLines);
+            if (count($statusLines) > 0) {
+                throw new \RuntimeException('主工作目录存在未提交改动，已阻断执行');
+            }
+        }
+
+        $baseBranch = trim((string) $task['base_branch']);
+        $fetchOutput = [];
+        $remoteRef = 'refs/remotes/origin/' . $baseBranch;
+        $remoteRefOutput = [];
+        exec(
+            'git -C ' . escapeshellarg($repoPath) . ' show-ref --verify --quiet ' . escapeshellarg($remoteRef),
+            $remoteRefOutput,
+            $remoteRefCode
+        );
+        if ($remoteRefCode !== 0) {
+            $fetchRefspec = '+refs/heads/' . $baseBranch . ':refs/remotes/origin/' . $baseBranch;
+            $fetchCmd = 'git -C ' . escapeshellarg($repoPath) . ' fetch origin ' . escapeshellarg($fetchRefspec) . ' 2>&1';
+            exec($fetchCmd, $fetchOutput, $fetchCode);
+            if ($runService && $runId > 0) {
+                $runService->appendLog($runId, 'git', "更新基准分支:\n" . implode("\n", $fetchOutput));
+            }
+            if ($fetchCode !== 0) {
+                throw new \RuntimeException('更新远程基准分支失败，请检查 origin 和凭据');
+            }
+        } elseif ($runService && $runId > 0) {
+            $runService->appendLog($runId, 'git', "基准分支 origin/{$baseBranch} 已存在，跳过 fetch");
+        }
+
+        $localBranchOutput = [];
+        exec(
+            'git -C ' . escapeshellarg($repoPath) . ' show-ref --verify --quiet refs/heads/'
+                . escapeshellarg($expectedBranch),
+            $localBranchOutput,
+            $localBranchCode
+        );
+        if ($localBranchCode === 0) {
+            $cmd = sprintf(
+                'git -C %s worktree add %s %s 2>&1',
+                escapeshellarg($repoPath),
+                escapeshellarg($worktree),
+                escapeshellarg($expectedBranch)
+            );
+        } else {
+            $cmd = sprintf(
+                'git -C %s worktree add %s -b %s origin/%s 2>&1',
+                escapeshellarg($repoPath),
+                escapeshellarg($worktree),
+                escapeshellarg($expectedBranch),
+                escapeshellarg($task['base_branch'])
+            );
+        }
+        $output = [];
+        exec($cmd, $output, $code);
+        if ($runService && $runId > 0) {
+            $runService->appendLog($runId, 'git', implode("\n", $output));
+        }
+        if ($code !== 0) {
+            throw new \RuntimeException('创建 git worktree 失败: ' . implode("\n", $output));
+        }
+        return $worktree;
+    }
+
     public function remove(array $project, array $task, $force = false)
     {
         $repoPath = rtrim($project['local_path'], '/');

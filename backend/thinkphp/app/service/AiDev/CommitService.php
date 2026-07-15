@@ -426,15 +426,15 @@ class CommitService
         if (!$reviewedChange) {
             throw new \RuntimeException('没有已 Review 的代码快照');
         }
-        $currentDiff = [];
-        exec('git -C ' . escapeshellarg($worktree) . ' diff HEAD', $currentDiff, $diffCode);
-        if ($diffCode !== 0) {
+        try {
+            $currentDiff = (new GitWorktreeService())->output($worktree, ['diff', 'HEAD']);
+        } catch (\RuntimeException $e) {
             throw new \RuntimeException('读取待提交 diff 失败');
         }
         $normalizeDiff = function ($diff) {
             return rtrim(str_replace("\r\n", "\n", (string) $diff));
         };
-        if ($normalizeDiff(implode("\n", $currentDiff)) !== $normalizeDiff((string) $reviewedChange['git_diff_snapshot'])) {
+        if ($normalizeDiff($currentDiff) !== $normalizeDiff((string) $reviewedChange['git_diff_snapshot'])) {
             throw new \RuntimeException('Review 后代码又发生了变化，请重新运行 AI 执行结果采集与 Review 后再提交');
         }
         exec('git -C ' . escapeshellarg($worktree) . ' add -A');

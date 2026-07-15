@@ -53,19 +53,6 @@ class ConfigService
         return $normalized;
     }
 
-    public function refreshLocalModelProfiles()
-    {
-        $profiles = array_merge(
-            $this->localClaudeProfiles(),
-            $this->localCodexProfiles(),
-            $this->localCursorProfiles()
-        );
-        if (!$profiles) {
-            throw new \RuntimeException('未发现本机 Claude/Codex/Cursor 模型配置');
-        }
-        return $this->saveModelProfiles($profiles);
-    }
-
     public function securityRules()
     {
         return Db::name('ai_dev_security_rules')->order('id', 'asc')->select()->toArray();
@@ -191,10 +178,8 @@ class ConfigService
             $profiles[] = [
                 'key' => (string) $key,
                 'label' => isset($item['label']) ? (string) $item['label'] : (string) $key,
-                'agent' => isset($item['agent']) ? (string) $item['agent'] : 'claude',
-                'command' => isset($item['command'])
-                    ? (string) $item['command']
-                    : (string) config('ai_dev.agent.command', 'claude'),
+                'tier' => isset($item['tier']) ? (string) $item['tier'] : 'medium',
+                'agent' => 'http',
                 'model' => isset($item['model']) ? (string) $item['model'] : (string) $key,
                 'api_base' => isset($item['api_base']) ? (string) $item['api_base'] : '',
                 'api_key_ref' => isset($item['api_key_ref']) ? (string) $item['api_key_ref'] : '',
@@ -206,100 +191,6 @@ class ConfigService
             ];
         }
         return $this->normalizeModelProfiles($profiles);
-    }
-
-    private function localClaudeProfiles()
-    {
-        $settings = $this->readJsonFile($this->homePath('.claude/settings.json'));
-        $localSettings = $this->readJsonFile($this->homePath('.claude/settings.local.json'));
-        $command = $this->commandPath('claude') ?: (string) config('ai_dev.agent.command', 'claude');
-        if (!$settings && !$localSettings && !$command) {
-            return [];
-        }
-
-        $env = isset($settings['env']) && is_array($settings['env']) ? $settings['env'] : [];
-        $model = isset($settings['model']) ? trim((string) $settings['model']) : '';
-        if ($model === '') {
-            foreach (['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL'] as $name) {
-                if (!empty($env[$name])) {
-                    $model = trim((string) $env[$name]);
-                    break;
-                }
-            }
-        }
-        $label = $model !== '' ? 'Claude ' . $model : 'Claude 默认模型';
-        $envOverrides = $this->nonSecretEnv($env);
-        $apiBase = isset($env['ANTHROPIC_BASE_URL']) ? (string) $env['ANTHROPIC_BASE_URL'] : (string) getenv('ANTHROPIC_BASE_URL');
-        $apiKeyRef = getenv('ANTHROPIC_AUTH_TOKEN') !== false
-            ? 'ANTHROPIC_AUTH_TOKEN'
-            : (getenv('ANTHROPIC_API_KEY') !== false ? 'ANTHROPIC_API_KEY' : '');
-
-        return [[
-            'key' => 'claude-' . $this->slug($model !== '' ? $model : 'default'),
-            'label' => $label,
-            'agent' => 'claude',
-            'command' => $command,
-            'model' => $model,
-            'api_base' => $apiBase,
-            'api_key_ref' => $apiKeyRef,
-            'context_length' => 0,
-            'timeout_seconds' => 0,
-            'env' => $envOverrides,
-            'enabled' => 1,
-            'description' => '刷新自 ~/.claude/settings.json; 密钥值不会写入模型档案。',
-        ]];
-    }
-
-    private function localCodexProfiles()
-    {
-        $config = $this->homePath('.codex/config.toml');
-        $command = $this->commandPath('codex');
-        if (!is_file($config) && !$command) {
-            return [];
-        }
-        $model = is_file($config) ? $this->readTomlTopLevelString($config, 'model') : '';
-        if ($model === '') {
-            $model = getenv('CODEX_MODEL') !== false ? (string) getenv('CODEX_MODEL') : '';
-        }
-        $label = $model !== '' ? 'Codex ' . $model : 'Codex 默认模型';
-        return [[
-            'key' => 'codex-' . $this->slug($model !== '' ? $model : 'default'),
-            'label' => $label,
-            'agent' => 'codex',
-            'command' => $command ?: 'codex',
-            'model' => $model,
-            'api_base' => getenv('OPENAI_BASE_URL') !== false ? (string) getenv('OPENAI_BASE_URL') : '',
-            'api_key_ref' => getenv('OPENAI_API_KEY') !== false ? 'OPENAI_API_KEY' : '',
-            'context_length' => 0,
-            'timeout_seconds' => 0,
-            'env' => [],
-            'enabled' => 1,
-            'description' => '刷新自 ~/.codex/config.toml。',
-        ]];
-    }
-
-    private function localCursorProfiles()
-    {
-        $config = $this->homePath('.cursor/config.json');
-        if (!is_file($config)) {
-            return [];
-        }
-        $data = $this->readJsonFile($config);
-        $model = isset($data['model']) ? trim((string) $data['model']) : '';
-        return [[
-            'key' => 'cursor-' . $this->slug($model !== '' ? $model : 'default'),
-            'label' => $model !== '' ? 'Cursor ' . $model : 'Cursor 默认模型',
-            'agent' => 'cursor',
-            'command' => $this->commandPath('cursor') ?: 'cursor',
-            'model' => $model,
-            'api_base' => '',
-            'api_key_ref' => '',
-            'context_length' => 0,
-            'timeout_seconds' => 0,
-            'env' => [],
-            'enabled' => $model !== '' ? 1 : 0,
-            'description' => '刷新自 ~/.cursor/config.json。',
-        ]];
     }
 
     private function normalizeModelProfiles(array $profiles)
@@ -340,9 +231,11 @@ class ConfigService
                 $env = $this->parseEnvText((string) $profile['env_text']);
             }
 
-            $agent = isset($profile['agent']) && trim((string) $profile['agent']) !== ''
-                ? trim((string) $profile['agent'])
-                : 'claude';
+            $agent = 'http';
+            $tier = isset($profile['tier']) ? strtolower(trim((string) $profile['tier'])) : 'medium';
+            if (!in_array($tier, ['complex', 'medium', 'simple'], true)) {
+                $tier = 'medium';
+            }
             $apiBase = isset($profile['api_base']) ? trim((string) $profile['api_base']) : '';
             // HTTP 直调走 OpenAI 兼容 /chat/completions,不能用 CLI 用的 /anthropic 端点。
             if ($agent === 'http') {
@@ -354,10 +247,8 @@ class ConfigService
                 'label' => isset($profile['label']) && trim((string) $profile['label']) !== ''
                     ? trim((string) $profile['label'])
                     : $key,
+                'tier' => $tier,
                 'agent' => $agent,
-                'command' => isset($profile['command']) && trim((string) $profile['command']) !== ''
-                    ? trim((string) $profile['command'])
-                    : (string) config('ai_dev.agent.command', 'claude'),
                 'model' => isset($profile['model']) ? trim((string) $profile['model']) : '',
                 'api_base' => $apiBase,
                 'api_key_ref' => isset($profile['api_key_ref']) ? trim((string) $profile['api_key_ref']) : '',

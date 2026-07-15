@@ -259,32 +259,28 @@
               </div>
             </template>
             <div v-else class="muted">AI 执行完成后展示改动</div>
-            <el-alert
-              v-if="!hasConfiguredChecks"
-              type="warning"
-              :closable="false"
-              title="项目尚未配置 lint/test/build 命令；Review 会判定为未通过，请先到项目配置页补充至少一项可执行检查。"
-            />
             <div class="toolbar">
               <el-button
                 type="primary"
                 :loading="reviewing"
-                :disabled="!['code_changed', 'review_failed'].includes(task.status)"
+                :disabled="!canStartAutoReview"
                 @click="review"
               >
-                运行自动检查
+                {{ task.status === 'ready_to_commit' ? '重新运行自动检查' : '运行自动检查' }}
               </el-button>
               <ModelPicker v-model="reviewModel" step="ai_review" />
               <el-button
                 :loading="aiReviewing || aiReviewRunning"
-                :disabled="aiReviewRunning || !['code_changed', 'review_passed', 'review_failed'].includes(task.status)"
+                :disabled="aiReviewRunning || !canStartReview"
                 @click="aiReview"
               >
-                {{ latestAiReviewRun?.status === 'draft' ? '执行当前草稿' : 'AI Review + 自动检查' }}
+                {{ latestAiReviewRun?.status === 'draft'
+                  ? '执行当前草稿'
+                  : (task.status === 'ready_to_commit' ? '重新 AI Review + 自动检查' : 'AI Review + 自动检查') }}
               </el-button>
               <el-button
                 plain
-                :disabled="aiReviewRunning || !['code_changed', 'review_passed', 'review_failed'].includes(task.status)"
+                :disabled="aiReviewRunning || !canStartReview"
                 @click="aiReview(true)"
               >
                 编辑提示语
@@ -335,9 +331,9 @@
                 :type="task.status === 'review_passed' ? 'warning' : 'success'"
                 :title="task.status === 'review_passed'
                   ? (hasReviewFixables
-                    ? '自动检查通过,但 Review 仍有待处理问题,可直接继续修改或人工确认后驳回'
+                    ? '自动检查通过,但 Review 仍有阻塞问题,可直接继续修改或人工确认后驳回'
                     : '自动检查通过,请打开 git diff 核对后确认放行或驳回')
-                  : '人工 Review 已通过,可在下方提交;如需反悔可填写意见驳回'"
+                  : '人工 Review 已通过,可在下方提交;若本地又改了代码,请重新运行检查/Review 后再提交,也可填写意见驳回'"
               />
               <el-input
                 v-model="rejectFeedback"
@@ -616,6 +612,9 @@ const reviewGroups = computed(() => ({
   suggestions: { label: '建议优化', items: reviewResult.value?.suggestions || [] },
 }))
 const hasReviewFixables = computed(() => reviewFeedbackHasContent(parseReviewFeedback(findReviewResultForFix(task.value?.reviews))))
+const reviewableStatuses = ['code_changed', 'review_passed', 'review_failed', 'ready_to_commit']
+const canStartReview = computed(() => reviewableStatuses.includes(task.value?.status))
+const canStartAutoReview = computed(() => ['code_changed', 'review_failed', 'ready_to_commit'].includes(task.value?.status))
 const showFixPanel = computed(() => {
   const status = task.value?.status
   if (['review_failed', 'code_changed'].includes(status)) return true
@@ -626,9 +625,6 @@ const showFixPanel = computed(() => {
   return status === 'review_passed' && hasReviewFixables.value
 })
 const canStartFix = computed(() => Boolean(fixFeedback.value.trim()) || hasReviewFixables.value)
-const hasConfiguredChecks = computed(() =>
-  ['lint_command', 'test_command', 'build_command'].some((field) => task.value?.project?.[field]?.trim()),
-)
 const runningRun = computed(() =>
   task.value?.runs?.find((run) => ['coding', 'fix'].includes(run.run_type) && ['running', 'queued'].includes(run.status)),
 )
@@ -758,6 +754,12 @@ function reviewFeedbackHasContent(data) {
   )
 }
 
+function reviewFeedbackHasFixables(data) {
+  return Boolean(data && typeof data === 'object'
+    && Array.isArray(data.blocking_issues)
+    && data.blocking_issues.length)
+}
+
 function isShellHumanReject(parsed) {
   if (!parsed || parsed.status !== 'human_reject') return false
   if ((parsed.warnings?.length || 0) > 0 || (parsed.suggestions?.length || 0) > 0) return false
@@ -775,10 +777,7 @@ function findReviewResultForFix(reviews) {
       return review.review_result
     }
     if (review.status === 'pass') {
-      const hasFixables = (parsed.blocking_issues?.length || 0) > 0
-        || (parsed.warnings?.length || 0) > 0
-        || (parsed.suggestions?.length || 0) > 0
-      if (hasFixables) return review.review_result
+      if (reviewFeedbackHasFixables(parsed)) return review.review_result
     }
   }
   return null
