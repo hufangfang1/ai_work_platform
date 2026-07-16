@@ -58,6 +58,13 @@ export const api = {
         content,
         project_summaries: projectSummaries,
       }),
+    generateReleaseDoc: (id) => request('POST', `/requirements/${id}/generate-release-doc`),
+    getReleaseDoc: (id) => request('GET', `/requirements/${id}/release-doc`),
+    saveReleaseDoc: (id, content, projectEntries = []) =>
+      request('PUT', `/requirements/${id}/release-doc`, {
+        content,
+        project_entries: projectEntries,
+      }),
   },
 
   tasks: {

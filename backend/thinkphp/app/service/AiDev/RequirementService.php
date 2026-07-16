@@ -88,6 +88,7 @@ class RequirementService
             ->select()->toArray();
         $requirement['tasks'] = (new TaskService())->attachDependenciesToTasks($requirement['tasks'], (int) $id);
         $requirement['retrospective'] = (new RequirementRetrospectiveService())->get((int) $id);
+        $requirement['release_doc'] = (new ReleaseDocService())->get((int) $id);
         return $requirement;
     }
 

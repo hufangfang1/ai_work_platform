@@ -169,6 +169,17 @@ CREATE TABLE ai_dev_retrospectives (
   KEY idx_requirement_id (requirement_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE ai_dev_release_docs (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  requirement_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  content MEDIUMTEXT,
+  project_entries_json MEDIUMTEXT,
+  created_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL,
+  KEY idx_release_doc_requirement_id (requirement_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE ai_dev_model_configs (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   provider VARCHAR(255) NOT NULL DEFAULT '',

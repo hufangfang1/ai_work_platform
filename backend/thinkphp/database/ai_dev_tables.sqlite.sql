@@ -168,6 +168,17 @@ CREATE TABLE ai_dev_retrospectives (
 CREATE INDEX idx_retro_task_id ON ai_dev_retrospectives (task_id);
 CREATE INDEX idx_retro_requirement_id ON ai_dev_retrospectives (requirement_id);
 
+CREATE TABLE ai_dev_release_docs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  requirement_id INTEGER NOT NULL DEFAULT 0,
+  content TEXT,
+  project_entries_json TEXT,
+  created_by INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  updated_at TEXT
+);
+CREATE INDEX idx_release_doc_requirement_id ON ai_dev_release_docs (requirement_id);
+
 CREATE TABLE ai_dev_model_configs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   provider TEXT NOT NULL DEFAULT '',

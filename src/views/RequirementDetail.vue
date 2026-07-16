@@ -331,6 +331,55 @@
       </div>
     </div>
 
+    <!-- 上线文档 -->
+    <div v-show="activeRequirementTab === 'requirement-release-doc'" id="requirement-release-doc" class="panel release-doc-panel requirement-section">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">上线文档</div>
+          <div class="muted">
+            所有项目提交后，综合需求文档、开发计划与代码改动汇总分支、表结构变更 SQL、环境变量与需执行的脚本/定时任务；可人工补充后保存。
+          </div>
+        </div>
+        <div class="toolbar">
+          <el-button
+            :loading="releaseDocGenerating"
+            :disabled="!canGenerateReleaseDoc"
+            @click="generateReleaseDoc"
+          >
+            {{ requirement.release_doc ? '重新生成' : '生成上线文档' }}
+          </el-button>
+          <el-button
+            type="primary"
+            :loading="releaseDocSaving"
+            :disabled="!releaseDocEditor.trim()"
+            @click="saveReleaseDoc"
+          >
+            保存文档
+          </el-button>
+        </div>
+      </div>
+      <el-alert
+        v-if="unfinishedReleaseDocProjects.length"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="`需等待以下项目提交：${unfinishedReleaseDocProjects.join('、')}`"
+      />
+      <template v-if="releaseDocEditor">
+        <div class="release-doc-view-toolbar">
+          <el-radio-group v-model="releaseDocPreview" size="small">
+            <el-radio-button :value="true">预览</el-radio-button>
+            <el-radio-button :value="false">编辑</el-radio-button>
+          </el-radio-group>
+        </div>
+        <MarkdownView v-if="releaseDocPreview" :source="releaseDocEditor" max-height="620px" />
+        <CodeEditor v-else v-model="releaseDocEditor" label="上线文档(Markdown)" language="markdown" :rows="22" />
+      </template>
+      <div v-else class="empty-state">
+        {{ requirement.tasks.length ? '所有项目提交后可生成上线文档' : '确认拆解并生成开发任务后，才能形成上线文档' }}
+      </div>
+    </div>
+
     <!-- 需求分支 -->
     <div v-show="activeRequirementTab === 'requirement-branch'" id="requirement-branch" class="panel requirement-section">
       <div class="panel-header">
@@ -453,6 +502,11 @@ const retroPreview = ref(true)
 const retroProjectSummaries = ref([])
 const retroGenerating = ref(false)
 const retroSaving = ref(false)
+const releaseDocEditor = ref('')
+const releaseDocPreview = ref(true)
+const releaseDocProjectEntries = ref([])
+const releaseDocGenerating = ref(false)
+const releaseDocSaving = ref(false)
 const docForm = reactive({ doc_url: '', content: '' })
 let detailTimer = null
 let tabInitialized = false
@@ -509,6 +563,15 @@ const canGenerateRetrospective = computed(() =>
   (requirement.value?.tasks || []).some((task) => ['committed', 'retrospected'].includes(task.status))
     && unfinishedRetrospectiveProjects.value.length === 0,
 )
+const unfinishedReleaseDocProjects = computed(() =>
+  (requirement.value?.tasks || [])
+    .filter((task) => task.status !== 'terminated' && !['committed', 'retrospected'].includes(task.status))
+    .map((task) => `${task.project_name || `project#${task.project_id}`}（${task.status}）`),
+)
+const canGenerateReleaseDoc = computed(() =>
+  (requirement.value?.tasks || []).some((task) => ['committed', 'retrospected'].includes(task.status))
+    && unfinishedReleaseDocProjects.value.length === 0,
+)
 const activeRequirementTasks = computed(() =>
   (requirement.value?.tasks || []).filter((task) => task.status !== 'terminated'),
 )
@@ -522,7 +585,8 @@ const requirementProgress = computed(() => {
   const taskTotal = activeRequirementTasks.value.length
   const tasksDone = taskTotal > 0 && completedTaskCount.value === taskTotal
   const hasRetro = Boolean(requirement.value?.retrospective)
-  const reached = [hasDoc, hasConfirmedBreakdown, hasBranch, hasRetro]
+  const hasReleaseDoc = Boolean(requirement.value?.release_doc)
+  const reached = [hasDoc, hasConfirmedBreakdown, hasBranch, hasRetro, hasReleaseDoc]
   const current = Math.max(0, reached.findIndex((done) => !done))
   const state = (index) => (reached[index] ? 'done' : index === current ? 'current' : 'pending')
   return [
@@ -539,6 +603,12 @@ const requirementProgress = computed(() => {
       hint: hasRetro ? '已保存' : tasksDone ? '待复盘' : `等待项目 ${completedTaskCount.value}/${taskTotal}`,
       target: 'requirement-retrospective',
       state: state(3),
+    },
+    {
+      label: '上线文档',
+      hint: hasReleaseDoc ? '已保存' : tasksDone ? '待生成' : `等待项目 ${completedTaskCount.value}/${taskTotal}`,
+      target: 'requirement-release-doc',
+      state: state(4),
     },
   ]
 })
@@ -564,7 +634,7 @@ async function load() {
   if (latestDoc.value) viewDocId.value = latestDoc.value.id
   if (!tabInitialized) {
     const current = requirementProgress.value.find((item) => item.state === 'current')
-    activeRequirementTab.value = current?.target || 'requirement-retrospective'
+    activeRequirementTab.value = current?.target || 'requirement-release-doc'
     tabInitialized = true
   }
   // 已有拆解时,回填其涉及项目,方便「重新拆解」时沿用人工范围
@@ -573,6 +643,10 @@ async function load() {
   if (requirement.value.retrospective && !retroEditor.value) {
     retroEditor.value = requirement.value.retrospective.content || ''
     retroProjectSummaries.value = requirement.value.retrospective.project_summaries || []
+  }
+  if (requirement.value.release_doc && !releaseDocEditor.value) {
+    releaseDocEditor.value = requirement.value.release_doc.content || ''
+    releaseDocProjectEntries.value = requirement.value.release_doc.project_entries || []
   }
   syncTimer()
 }
@@ -723,6 +797,34 @@ async function saveRetrospective() {
   }
 }
 
+async function generateReleaseDoc() {
+  releaseDocGenerating.value = true
+  try {
+    const data = await api.requirements.generateReleaseDoc(props.id)
+    releaseDocEditor.value = data.content
+    releaseDocProjectEntries.value = data.project_entries || []
+    releaseDocPreview.value = true
+    ElMessage.success('已按项目汇总上线信息')
+  } finally {
+    releaseDocGenerating.value = false
+  }
+}
+
+async function saveReleaseDoc() {
+  releaseDocSaving.value = true
+  try {
+    await api.requirements.saveReleaseDoc(
+      props.id,
+      releaseDocEditor.value,
+      releaseDocProjectEntries.value,
+    )
+    await load()
+    ElMessage.success('上线文档已保存')
+  } finally {
+    releaseDocSaving.value = false
+  }
+}
+
 onMounted(load)
 onBeforeUnmount(() => {
   if (detailTimer) clearInterval(detailTimer)
@@ -844,12 +946,14 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
 }
 
-.retrospective-panel {
+.retrospective-panel,
+.release-doc-panel {
   display: grid;
   gap: 12px;
 }
 
-.retro-view-toolbar {
+.retro-view-toolbar,
+.release-doc-view-toolbar {
   display: flex;
   justify-content: flex-end;
 }

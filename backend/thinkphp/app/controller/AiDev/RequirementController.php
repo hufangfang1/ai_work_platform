@@ -5,6 +5,7 @@ namespace app\controller\AiDev;
 use app\service\AiDev\BreakdownService;
 use app\service\AiDev\BranchService;
 use app\service\AiDev\RequirementService;
+use app\service\AiDev\ReleaseDocService;
 use app\service\AiDev\RequirementRetrospectiveService;
 use think\facade\Db;
 
@@ -109,6 +110,26 @@ class RequirementController extends BaseController
             (int) $id,
             $this->request->put('content/s', ''),
             is_array($summaries) ? $summaries : []
+        ));
+    }
+
+    public function generateReleaseDoc($id, ReleaseDocService $service)
+    {
+        return $this->ok($service->generate((int) $id));
+    }
+
+    public function getReleaseDoc($id, ReleaseDocService $service)
+    {
+        return $this->ok($service->get((int) $id));
+    }
+
+    public function saveReleaseDoc($id, ReleaseDocService $service)
+    {
+        $entries = $this->request->put('project_entries', []);
+        return $this->ok($service->save(
+            (int) $id,
+            $this->request->put('content/s', ''),
+            is_array($entries) ? $entries : []
         ));
     }
 }
