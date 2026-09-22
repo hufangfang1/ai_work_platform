@@ -1,6 +1,32 @@
-# AI 开发平台
+# 回家 · 记忆里的院子
 
-把需求文档逐步转化为项目拆解、开发计划、隔离代码改动、代码审查和 Git 提交的 AI 开发平台。技术栈为 Vue 3 + Vite 7 + ThinkPHP 6。
+当前首页是基于五张私人老照片搭建的可行走三维院子。它是**照片参考的近似空间重建**，不是自动扫描或世界模型生成，布局和尺寸仍需照片所有者确认。不依赖付费生成接口。
+
+- 拖动环顾，WASD / 方向键或屏幕方向按钮移动。
+- 切换三个参考视点、俯看院子，对照五张原照片。
+- 未知室内暂不开放；冬日场景不混入夏日蓝棚或照片人物。
+- 原 Momo 项目保留在 `/#/momo`，原有本地数据没有迁移或清除。
+
+运行：`npm install`、`npm run dev`。验证：`npm test`、`npm run build`。
+
+**隐私：`public/home-photos/` 含私人照片，仅供本地预览。公开部署会发布这些文件，部署前必须另行获得授权或移除照片。**
+
+实现与推断记录见 [docs/childhood-home.md](docs/childhood-home.md)。
+
+---
+
+# Momo（保留原型）
+
+一只住在柔光小屋里的云朵小兽。它不管理任务，也不催你提高效率，只在你需要时陪你待一会儿。
+
+## 它会做什么
+
+- 不必输入文字：摸摸头、铺地毯、追纸团、伸懒腰，或者坐在旁边。
+- 实时立体角色：一体成形的云朵，耳朵、爪子与尾巴联动，带眨眼、表情和呼吸。
+- 摸头有完整回应：注意到你、靠近、眯眼、慢慢放松；不是直接替换表情。
+- 连续云瓣轮廓、细绒表面、渐变耳朵和有厚度的琥珀爱心；房间可切换明暗。
+- 地毯和灯光偏好保存在浏览器本地，下次回来仍在。
+- 保留小故事、悄悄话和回忆；可选连接 DeepSeek 生成回应。
 
 ## 运行
 
@@ -9,51 +35,16 @@ npm install
 npm run dev
 ```
 
-本地访问：http://localhost:6173/
+如需 DeepSeek，在悄悄话面板里点击连接入口并输入 API Key。Key 只保存在本机 `.env.local`。
 
-后端安装、数据库和 Worker 启动方式见 `backend/thinkphp/README.md`。
+## 场景实现
 
-## 已实现
+`src/scene/cloudSculpt.js` 用平滑合并的体积生成连续云朵；`furSurface.js` 生成实例化细绒；`momoCharacter.js` 管理角色材质、表情与分阶段动作。`momoScene.js` 负责小屋、灯光、相机、拾取和动作编排；不是播放角色插画或预录视频。
 
-### 前端
+`src/components/LivingRoom.vue` 负责互动及对白。动作阶段和完成状态由场景事件驱动，页面隐藏或场景离屏时暂停渲染，卸载时回收 GPU 资源。系统开启“减少动态效果”时，停用跳跃、追逐位移和粒子。小屏幕会限制跑动范围，避免角色跑出画面。
 
-- 开发任务列表、筛选、创建与详情页
-- 手动需求内容录入、读取与敏感信息脱敏
-- AI 分支名生成、格式校验、远程分支占用模拟检查
-- 开发计划生成、人工编辑、新版本保存和确认
-- Redis Queue 异步 Agent 执行、实时日志、变更摘要、变更文件和 git diff
-- AI Review 通过/不通过、继续修改入口
-- commit message 生成、人工确认提交、commit hash 记录
-- 需求完成后按项目汇总失败、Review、验证和优化项，生成需求级复盘 Markdown
-- 项目配置页
-- 模型与脱敏规则配置页
+主场景需要支持 WebGL 的现代浏览器。现有插画继续用于故事及回忆界面，不参与立体角色动画。
 
-### 后端
+## 验证
 
-- 真实 ThinkPHP 项目：`backend/thinkphp`
-- Composer 配置：`backend/thinkphp/composer.json`
-- Web 入口：`backend/thinkphp/public/index.php`
-- CLI 入口：`backend/thinkphp/think`
-- ThinkPHP 路由：`backend/thinkphp/route/ai_dev.php`
-- 控制器：`backend/thinkphp/app/controller/AiDev`
-- 服务层：`backend/thinkphp/app/service/AiDev`
-- Redis Queue Job：`backend/thinkphp/app/job/AiDevCodeJob.php`
-- MySQL 建表 SQL：`backend/thinkphp/database/ai_dev_tables.sql`
-- Claude Code headless 执行封装：`AgentExecutorService`
-- supervisor Worker 示例：`backend/thinkphp/supervisor/ai_dev_worker.conf`
-
-## 主流程质量门槛
-
-1. 需求拆解确认后，才会生成开发任务和分项目需求文档。
-2. 下游只读取已确认拆解；未确认的新拆解不会改变计划、编码或 Review 上下文。
-3. 开发计划需满足角色对应的结构和完整性校验，人工确认后才能编码。
-4. 编码在独立 git worktree 中执行，并记录完整 diff 与项目检查结果。
-5. AI Review 读取 worktree 的完整 `git diff HEAD`，并结合 lint/test/build 结果判定；存在阻塞项不能进入提交。
-6. 提交前再次比对当前 diff 与已 Review 快照，防止 Review 后代码漂移。
-
-后端轻量回归检查：
-
-```bash
-cd backend/thinkphp
-php tests/run.php
-```
+`npm test` 检查云朵几何、法线、绒毛采样与资源释放；`npm run build` 构建生产资源。视觉和动作仍需在浏览器中验收。
