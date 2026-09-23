@@ -22,7 +22,7 @@ test('weathered PBR maps keep data linear, repeat aligned and resources disposab
   try {
     materials=makeHomeMaterials({capabilities:{getMaxAnisotropy:()=>4}})
     const used=[]
-    for(const name of ['plaster','brick','ground','roofMetal']){
+    for(const name of ['plaster','brick','ground','roofMetal','firedClay','gatePaint','wood','soil']){
       const source=materials.maps[name],material=materials.mapped(source,[2,3])
       used.push(material)
       assert.equal(material.map.colorSpace,T.SRGBColorSpace)
@@ -40,7 +40,28 @@ test('weathered PBR maps keep data linear, repeat aligned and resources disposab
       assert.ok(material.bumpScale>0&&material.bumpScale<.03)
     }
     assert.deepEqual(used[3].userData.unit,[2,3])
+    assert.deepEqual(used[4].userData.unit,[1,1]);
+    assert.deepEqual(used[5].userData.unit,[1.2,1.2]);
+    assert.ok(used[5].bumpScale<=.002);
+    assert.deepEqual(used[6].userData.unit,[1,3]);
+    assert.ok(used[6].bumpScale<=.003);
+    assert.deepEqual(used[7].userData.unit,[4,4]);
+    assert.ok(used[7].bumpScale>0&&used[7].bumpScale<=.012);
+    const original=used[0].map,bump=used[0].bumpMap,rough=used[0].roughnessMap;
+    let replacedDisposed=false;
+    original.addEventListener('dispose',()=>{replacedDisposed=true});
+    const generated=new T.Texture({width:2048,height:2048});
+    materials.useAlbedo(materials.maps.plaster,generated);
+    assert.ok(replacedDisposed);
+    assert.equal(used[0].map.image,generated.image);
+    assert.equal(used[0].map.colorSpace,T.SRGBColorSpace);
+    assert.equal(used[0].map.wrapS,T.MirroredRepeatWrapping);
+    assert.deepEqual(used[0].map.repeat.toArray(),[2,3]);
+    assert.equal(used[0].bumpMap,bump);
+    assert.equal(used[0].roughnessMap,rough);
+    assert.notEqual(used[1].map.image,generated.image);
     const watched=used.flatMap(m=>[m,m.map,m.bumpMap,m.roughnessMap]),disposed=new Set()
+    watched.push(generated);
     watched.forEach(resource=>resource.addEventListener('dispose',()=>disposed.add(resource)))
     materials.dispose();materials=null
     assert.equal(disposed.size,watched.length)

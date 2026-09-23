@@ -1,6 +1,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { homePhotos } from '../scene/homeLayout.js'
+import { homePhotos, gateZ, addedRooms } from '../scene/homeLayout.js'
+const mapGateY=78+gateZ*7.5,mapWingFrontY=78+addedRooms[0].bounds[2]*7.5
+const boundaryPath=`M18 138V${mapGateY}H75m23 0h39v${138-mapGateY}`
+const housePath=`M17 135h94V${mapWingFrontY}h24v${182-mapWingFrontY}H17Z`
 const host=ref(null),ready=ref(false),entered=ref(false),error=ref(''),warning=ref(''),view=ref(2),mode=ref('walk'),gallery=ref(false),notes=ref(false),position=ref({x:0,z:3,yaw:0})
 const current=computed(()=>homePhotos[view.value])
 const photoIndex=ref(2),selectedPhoto=computed(()=>homePhotos[photoIndex.value])
@@ -56,12 +59,12 @@ onBeforeUnmount(()=>{disposed=true;window.removeEventListener('keydown',keyClose
     </nav>
 
     <aside v-if="entered&&!gallery&&!notes" class="home-position" aria-label="院子位置示意，布局为推断">
-      <svg viewBox="0 0 150 190" aria-hidden="true"><path d="M18 138V22H75m23 0h39v116"/><path class="map-house" d="M17 135h94V84h24v98H17Z"/><path class="map-shed" d="M19 86h28v49H19Z"/><path d="M19 120h28M20 124h6v8h-6Z" stroke-dasharray="2 2"/><circle cx="25" cy="60" r="7"/><circle class="map-person" :cx="65+position.x*7.5" :cy="78+position.z*7.5" r="3.5"/></svg>
+      <svg viewBox="0 0 150 190" aria-hidden="true"><path :d="boundaryPath"/><path class="map-house" :d="housePath"/><path class="map-shed" d="M19 86h28v49H19Z"/><path d="M19 120h28M20 124h6v8h-6Z" stroke-dasharray="2 2"/><circle cx="25" cy="60" r="7"/><circle class="map-person" :cx="65+position.x*7.5" :cy="78+position.z*7.5" r="3.5"/></svg>
       <span>{{mode==='walk'?'你在院子里':'空间概览'}} · 推断布局</span>
       <div v-if="mode==='walk'" class="walk-pad" aria-label="行走控制"><button v-for="d in directions" :key="d.key" :aria-label="d.label" :class="d.key" @click="world?.step(d.key)">{{d.symbol}}</button></div>
     </aside>
 
-    <div class="home-bottom-note"><span>2015 · 冬日参照</span><span>{{warning||'仅在本地浏览 · 未调用生成 API'}}</span></div>
+    <div class="home-bottom-note"><span>2015 · 冬日参照</span><span>{{warning||'本地浏览 · 原照片未上传'}}</span></div>
 
     <section v-if="gallery" ref="drawer" class="photo-drawer" role="dialog" aria-modal="true" aria-label="五张老照片">
       <header><div><small>ORIGINAL PHOTOGRAPHS</small><h2>仅有的五张，<br>也是我们的起点。</h2></div><button aria-label="关闭照片" @click="toggleGallery">×</button></header>
@@ -75,8 +78,8 @@ onBeforeUnmount(()=>{disposed=true;window.removeEventListener('keydown',keyClose
     <section v-if="notes" ref="drawer" class="photo-drawer reconstruction-notes" role="dialog" aria-modal="true" aria-label="重建说明">
       <header><div><small>A FIRST RECONSTRUCTION</small><h2>记得的，留下。<br>不确定的，不假装。</h2></div><button aria-label="关闭重建说明" @click="toggleNotes">×</button></header>
       <article><span>01 / 来自照片</span><h3>让你认得出的细节</h3><p>旧白墙、木格窗和铁栏，门口台阶、砖门洞、红铁门、绿篷三轮、车棚与落叶的树。窗户使用了第一张原照片的局部纹理。</p></article>
-      <article><span>02 / 已确认与待校正</span><h3>一体房屋与贴墙连棚</h3><p>正对院门的主屋与西边房间属于同一栋建筑，西侧后部也有房间，主屋侧墙与院墙外沿对齐。小棚贴着院墙，靠屋的走廊设洗手池，前面为车棚，两部分共用连续棚顶。具体尺寸、屋顶形状、门窗与分隔仍为估计，未重建室内。</p></article>
-      <article><span>03 / 没有擅自补齐</span><h3>先停在院子里</h3><p>室内没有照片，所以暂不开放。不同季节的物品没有混放，也没有重建照片中的人物。现在是本地几何搭建，不是 AI 自动生成世界。</p></article>
+      <article><span>02 / 已确认与待校正</span><h3>双坡屋顶与连续平台</h3><p>正对院门的主屋与西边房间属于同一栋建筑，两处屋顶都是倒 V 形。走廊上方的平台左右与主屋侧墙平齐，西厢房屋顶紧接平台前沿。贴墙小棚暂按后沿与平台顶面同高衔接，后部洗手池走廊由平台覆盖，前面延伸为车棚。屋脊高度、平台厚度与具体尺寸仍为估计，未重建室内。</p></article>
+      <article><span>03 / 没有擅自补齐</span><h3>先停在院子里</h3><p>室内没有照片，所以暂不开放。不同季节的物品没有混放，也没有重建照片中的人物。现在是本地几何搭建，不是 AI 自动生成世界。旧石灰墙、铁门旧漆和木纹使用通用 AI 生成材质，非实物扫描；生成时未使用原照片，浏览时不调用生成接口。</p></article>
       <button class="photo-location" @click="notes=false;overview()">俯看布局，核对记忆 <span>↗</span></button>
       <a href="#/momo" class="previous-project">之前的 Momo 原型仍保留 →</a>
     </section>

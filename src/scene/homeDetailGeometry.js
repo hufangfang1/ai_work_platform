@@ -28,12 +28,12 @@ export function carBodyGeometry(){
 
 // One continuous sheet: corrugation changes the silhouette and underside too.
 // Phase is based on world-sized pitch, not on the number of subdivisions.
-export function corrugatedSheetGeometry(width,depth,pitch=.15){
+export function corrugatedSheetGeometry(width,depth,pitch=.15,lengthSlope=.012){
   const segments=Math.ceil(width/pitch)*12,geometry=new T.PlaneGeometry(width,depth,segments,10);
   const p=geometry.attributes.position,uv=geometry.attributes.uv;
   for(let i=0;i<p.count;i++){
     const x=p.getX(i),z=-p.getY(i);
-    p.setXYZ(i,x,Math.cos((x+width/2)/pitch*Math.PI*2)*.026+z*.012,z);
+    p.setXYZ(i,x,Math.cos((x+width/2)/pitch*Math.PI*2)*.026+z*lengthSlope,z);
     uv.setXY(i,(x+width/2)/2,(z+depth/2)/3);
   }
   geometry.computeVertexNormals();return geometry;
