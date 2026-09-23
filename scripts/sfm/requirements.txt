@@ -1,0 +1,4 @@
+pycolmap==3.12.5
+numpy>=1.23,<2
+opencv-python>=4.7,<5
+Pillow>=9.4,<12

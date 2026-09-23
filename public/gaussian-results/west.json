@@ -1,0 +1,31 @@
+{
+  "confidence_mask": true,
+  "width": 1036,
+  "height": 784,
+  "group": "west",
+  "steps": 1500,
+  "splats": 80000,
+  "seconds": 97.6,
+  "training_psnr_before": [
+    14.793805122375488,
+    18.688156127929688,
+    17.299468994140625,
+    16.625812530517578
+  ],
+  "training_psnr_after": [
+    28.446609497070312,
+    29.595853805541992,
+    28.211406707763672,
+    26.590484619140625
+  ],
+  "photos": [
+    "references/west-overview-2015.jpg",
+    "references/west-facade-2015.jpg",
+    "03-gate.jpg",
+    "04-summer.jpg"
+  ],
+  "camera_source": "VGGT estimated, fixed during splat training",
+  "evaluation": "Masked training-view PSNR only, NOT held-out novel-view quality",
+  "backend": "metal-gauss 0.2.1, native MPS/Metal",
+  "ply": "west.ply"
+}

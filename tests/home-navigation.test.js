@@ -6,7 +6,9 @@ import {shedBeamY} from '../src/scene/homeLayout.js'
 test('owner-confirmed inverted-V roof keeps its footprint and the flat canopy covers the whole corridor',()=>{
   assert.equal(mainRoof.depth,6.8);assert.equal(mainRoof.centerZ,-2.85);
   assert.ok(mainRoof.rise>0&&mainRoof.eaveY+mainRoof.rise>mainRoof.eaveY);
-  for(const key of ['depth','centerZ'])assert.equal(corridorCanopy[key],frontPorch[key]);
+  assert.equal(corridorCanopy.depth,1.8);
+  assert.ok(frontPorch.depth>corridorCanopy.depth);
+  assert.ok(Math.abs((frontPorch.centerZ-frontPorch.depth/2)-(corridorCanopy.centerZ-corridorCanopy.depth/2))<1e-9);
   assert.equal(corridorCanopy.width,houseLocalMaxX-houseLocalMinX);
   assert.equal(corridorCanopy.centerX,(houseLocalMaxX+houseLocalMinX)/2);
   assert.ok(corridorCanopy.baseY>3.72);
@@ -33,8 +35,8 @@ test('outer west window and middle door move toward the gate, corner door stays 
   assert.equal(westFacade.windows[0].z,1.1)
   assert.ok(westFacade.doors[0].z-westFacade.windows[0].z>3)
   assert.ok(westFacade.windows[0].width>=2.1)
-  assert.equal(westFacade.windows[0].height,houseWindowOpeningHeight)
-  assert.equal(westFacade.windowCenterY,houseWindowCenterY)
+  assert.equal(westFacade.windows[0].height,2)
+  assert.equal(westFacade.windowCenterY,2.715)
   assert.equal(westFacade.doorTopY,houseWindowCenterY+houseWindowOpeningHeight/2)
   assert.ok(westFacade.doorLeafHeight>2.5)
   assert.equal(westFacade.windows[0].columns,4)
@@ -128,3 +130,12 @@ test('annotated rooms are solid and west boundary leaves the former wall open',(
   assert.equal(canWalk(6.3,-2),true)
   assert.equal(canWalk(9.6,-2),false)
 })
+
+// The inner wing wall is the visible photo junction, not the outer house edge.
+import {westWingYardWallX} from '../src/scene/homeLayout.js'
+test('west window leaves the photo-sized wall return at the wing junction',()=>{
+ const w=houseWindows[0];
+ const westEdge=housePlacement.position[0]-(w.x-w.width/2)*housePlacement.scaleX;
+ const clear=westWingYardWallX-westEdge;
+ assert.ok(clear>1.25&&clear<1.5,`clear wall return ${clear}`);
+});

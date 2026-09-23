@@ -40,18 +40,18 @@ test('facade preserves the approved bounds, with finite unit normals and 4 m UVs
 test('window and bottom-open door centers are empty while adjacent plaster stays solid', () => {
   withFacade(({ raycast }) => {
     assert.equal(houseWindows.length,2)
-    near(houseWindows[0].width,houseWindows[1].width)
-    near(houseWindows[0].width,2.8)
-    near(houseWindowCenterY-houseWindowOpeningHeight/2,1.715)
+    near(houseWindows[1].width,2.8)
+    near(houseWindows[0].width,2.93)
+    near(houseWindowCenterY-houseWindowOpeningHeight/2,1.487)
     near(houseWindowCenterY+houseWindowOpeningHeight/2,3.715)
     for (const window of houseWindows) {
       assert.equal(raycast([window.x, houseWindowCenterY, 1]).length, 0)
       assert.equal(raycast([window.x, houseWindowCenterY, -1], [0, 0, 1]).length, 0)
       assert.equal(raycast([window.x, 3.6, 1]).length, 0)
-      assert.ok(raycast([window.x, 1.5, 1]).length > 0)
+      assert.ok(raycast([window.x, houseWindowCenterY-houseWindowOpeningHeight/2-.08, 1]).length > 0)
       assert.ok(raycast([window.x, 1.1, 1]).length > 0)
       assert.ok(raycast([window.x, 3.77, 1]).length > 0)
-      assert.ok(raycast([window.x+1.55, houseWindowCenterY, 1]).length > 0)
+      assert.ok(raycast([window.x+window.width/2+.15, houseWindowCenterY, 1]).length > 0)
       assert.ok(raycast([window.x + (window.width + .08) / 2 + .1, houseWindowCenterY, 1]).length > 0)
     }
     for (const y of [.001, .8, 2.27, 3.74]) assert.equal(raycast([houseDoorLocalX, y, 1]).length, 0)
@@ -62,11 +62,11 @@ test('window and bottom-open door centers are empty while adjacent plaster stays
 })
 
 test('wider double door and sidelights fit inside the expanded facade opening',()=>{
-  near(houseEntry.woodWidth,2.15)
+  assert.ok(houseEntry.woodWidth>2.3&&houseEntry.woodWidth<2.4)
   near(houseEntry.sideWindowWidth,.5)
-  near(houseEntry.transomWidth,3.24)
-  near(houseEntry.openingWidth,3.33)
-  near((houseEntry.woodWidth-1.9)*.8,.2)
+  near(houseEntry.transomWidth,3.434)
+  near(houseEntry.openingWidth,3.523)
+  assert.ok(houseWindows[0].width/houseEntry.woodWidth>1.2&&houseWindows[0].width/houseEntry.woodWidth<1.3)
   near((houseEntry.sideWindowWidth-.25)*.8,.2)
   near(houseEntry.transomWidth/2,houseEntry.sideWindowOffset+houseEntry.sideWindowWidth/2)
   assert.ok(houseEntry.sideWindowOffset-houseEntry.sideWindowWidth/2>houseEntry.woodWidth/2)

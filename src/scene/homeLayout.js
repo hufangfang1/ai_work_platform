@@ -1,3 +1,4 @@
+import neuralOpenings from './neuralOpeningFit.json' with { type: 'json' }
 // User confirmed that the house faces the gate across the courtyard.
 // Dimensions and other placements remain provisional, not surveyed.
 export const housePlacement = { position: [1.4, 0, 7.8], rotationY: Math.PI, scaleX: .8 }
@@ -26,6 +27,7 @@ export const gatePortico = {
   outerWidth:2*gateHalfPillarSpacing+gatePillarWidth,
   clearWidth:gateOuterOpeningWidth,innerClearWidth:gateInnerOpeningWidth,
   innerTopY:3.605-1,leafWidth:gateInnerOpeningWidth/2-.015,
+  roofBaseY:3.605,roofThickness:.35,rimWidth:.4,rimHeight:.2,
 }
 export const gateApron = {
   frontZ:gatePortico.frontZ,backZ:gatePortico.backZ+.4,
@@ -33,19 +35,29 @@ export const gateApron = {
   centerZ:(gatePortico.frontZ+gatePortico.backZ+.4)/2,width:gatePortico.clearWidth+.1,
 }
 // The house is rotated 180° and scaled to 0.8 on X: +0.625 local is 0.5 m east in the yard.
-export const houseDoorLocalX = 1.725
-const houseSideWindowWidth = .5
-const houseSideWindowOffset = 1.37
+export const houseDoorLocalX = neuralOpenings.doorCenterX
+const houseSideWindowWidth = neuralOpenings.sideWindowWidth
+const houseSideWindowOffset = neuralOpenings.sideWindowOffset
 export const houseEntry = {
   // The house uses scaleX .8, so +.25 local yields +.2 m in the courtyard.
-  woodWidth:2.15,sideWindowWidth:houseSideWindowWidth,sideWindowOffset:houseSideWindowOffset,
+  woodWidth:neuralOpenings.doorWidth,sideWindowWidth:houseSideWindowWidth,sideWindowOffset:houseSideWindowOffset,
   // The transom spans the outer edges of both sidelights.
-  transomWidth:2*(houseSideWindowOffset+houseSideWindowWidth/2),openingWidth:3.33,
+  transomWidth:2*(houseSideWindowOffset+houseSideWindowWidth/2),openingWidth:neuralOpenings.openingWidth,
 }
-export const houseWindows = [{x:-3.1,width:2.8},{x:7.4,width:2.8}]
-// Keep the confirmed upper edge at 3.715 m while raising both sills by 0.4 m.
-export const houseWindowCenterY = 2.715
-export const houseWindowOpeningHeight = 2
+// The red line ends on the barred sidelight beside the main door, not
+// across the entrance. Coordinates are local to the main house facade.
+export const houseClothesline = {
+  start:[-5.5+neuralOpenings.windowOffsetX,2.87,.30],
+  control:[(-5.5+neuralOpenings.windowOffsetX+houseDoorLocalX-houseSideWindowOffset)/2,2.43,.58],
+  end:[houseDoorLocalX-houseSideWindowOffset,2.70,.30],
+  garmentX:-2.2+neuralOpenings.windowOffsetX,
+}
+export const houseWindows = [{x:neuralOpenings.windowX,width:neuralOpenings.windowWidth},{x:7.4,width:2.8}]
+// Neural depth landmarks set sill/rail and left-window proportion. The cropped
+// window top retains its previous height; these are inferred, not surveyed.
+export const houseWindowCenterY = (neuralOpenings.windowTop+neuralOpenings.windowSill)/2
+export const houseWindowRailY = neuralOpenings.windowRail
+export const houseWindowOpeningHeight = neuralOpenings.windowTop-neuralOpenings.windowSill
 export const sideWallHeight = 2.8
 export const frontWallHeight = 2.7
 export const eastWall = { centerX: -6.3, thickness: .35, startZ:gateWallFrontZ, endZ:8 }
@@ -58,12 +70,20 @@ export const houseLocalMinX = (housePlacement.position[0]-houseWestX)/housePlace
 export const mainRoof = {
   centerX:(houseLocalMinX+houseLocalMaxX)/2,centerZ:-2.85,
   width:houseLocalMaxX-houseLocalMinX+.75,depth:6.8,
-  eaveY:5.1,rise:1.2,thickness:.1,
+  eaveY:5.3,rise:1.2,thickness:.1,
 }
-export const frontPorch = {centerX:1.7,centerZ:.8,width:15.3,depth:1.8,height:.28}
+export const frontPorch = {centerX:1.7,centerZ:1.075,width:15.3,depth:2.35,height:.28}
+// Owner correction: two ramps symmetric about the main doorway, with a
+// 50 cm clear gap. Convert world metres through the house's X scale.
+// Ramp widths and runs remain photo estimates.
+const porchRampWidth=.65
+const porchRampOffset=(porchRampWidth+.50/housePlacement.scaleX)/2
+export const porchRamps = [-1,1].map(side=>({
+  centerX:houseDoorLocalX+side*porchRampOffset,width:porchRampWidth,run:.95,
+}))
 export const corridorCanopy = {
-  centerX:(houseLocalMinX+houseLocalMaxX)/2,centerZ:frontPorch.centerZ,
-  width:houseLocalMaxX-houseLocalMinX,depth:frontPorch.depth,baseY:4.9,thickness:.14,
+  centerX:(houseLocalMinX+houseLocalMaxX)/2,centerZ:.8,
+  width:houseLocalMaxX-houseLocalMinX,depth:1.8,baseY:4.9,thickness:.14,
 }
 export const corridorFrontWorldZ=housePlacement.position[2]-corridorCanopy.centerZ-corridorCanopy.depth/2
 // The owner confirmed that the small shelter overlaps the house window.
@@ -83,12 +103,6 @@ export const shedRoof={
   width:shedPlacement.width+.15,centerLocalX:-.075,
   pitch:0,corrugation:.026,
 }
-export const shedClerestory={
-  z:shedRoof.backZ,
-  centerLocalX:shedRoof.centerLocalX,width:shedRoof.width,
-  bottomY:shedPlacement.roofY+shedRoof.corrugation,
-  topY:corridorCanopy.baseY,
-}
 // The outside flank of the high corridor is brick, continuous with the east
 // courtyard boundary. The glazed band is only on the yard-facing front.
 export const shedSideBrick={
@@ -99,13 +113,18 @@ export const shedSideBrick={
 // Local Z along the sheet; purlins touch the valleys from below. Keep the
 // confirmed plan unchanged while leaving clearance over the vehicle canopy.
 export const shedBeamY = localZ => shedPlacement.roofY-shedRoof.corrugation+localZ*shedRoof.pitch-.005-shedPlacement.beamThickness/2
-// A cement wall rises from the house step to the low shed roof. The glass
-// above it continues to the high projecting eave on the same front plane.
+// Close reference: a substantial half-height brick wall with a plastered
+// end reveal. Dimensions are photo estimates; glazing starts at its cap.
 export const shedStepWall={
   minX:eastWall.centerX,maxX:shedPlacement.position[0]+shedRoof.centerLocalX+shedRoof.width/2,
-  z:corridorFrontWorldZ,thickness:.22,
-  bottomY:frontPorch.height,
-  topY:shedBeamY(corridorFrontWorldZ-shedPlacement.position[2])+shedPlacement.beamThickness/2,
+  z:corridorFrontWorldZ,thickness:.38,
+  bottomY:0,topY:1.50,capThickness:.055,
+}
+export const shedClerestory={
+  z:shedStepWall.z,
+  frameZ:shedStepWall.z+shedStepWall.thickness/2-.055,
+  centerLocalX:shedRoof.centerLocalX,width:shedRoof.width,
+  bottomY:shedStepWall.topY,topY:corridorCanopy.baseY,
 }
 // The hand-drawn edge runs lengthwise through the yard, not across it.
 // Each pair is [world Z, world X]: earth lies toward the east wall (smaller X),
@@ -143,8 +162,8 @@ export const westWing={
 // platform. Its rear end meets the main slab at world Z=6.1 without overlap.
 export const westCorridorCanopy={
   centerX:(addedRooms[0].bounds[2]+corridorFrontWorldZ)/2-westWing.position[2],
-  centerZ:westWing.depth/2+frontPorch.depth/4,
-  width:corridorFrontWorldZ-addedRooms[0].bounds[2],depth:frontPorch.depth/2,
+  centerZ:westWing.depth/2+corridorCanopy.depth/4,
+  width:corridorFrontWorldZ-addedRooms[0].bounds[2],depth:corridorCanopy.depth/2,
   baseY:corridorCanopy.baseY,thickness:corridorCanopy.thickness,
 }
 export const westGroundCorridor={
@@ -152,11 +171,24 @@ export const westGroundCorridor={
   width:westCorridorCanopy.width,depth:westCorridorCanopy.depth,
   height:frontPorch.height,
 }
+// Raised edging follows the exposed L-shaped canopy edge in world coordinates.
+// The house's X scale must not shrink the confirmed 30 cm width.
+export const canopyRim={width:.3,height:.2}
+const westCanopyOuterX=westWing.position[0]-westWing.depth/2-westCorridorCanopy.depth
+const canopyRimY=corridorCanopy.baseY+corridorCanopy.thickness+canopyRim.height/2
+export const canopyRimSegments=[
+  {position:[houseWestX-canopyRim.width/2,canopyRimY,corridorFrontWorldZ+corridorCanopy.depth/2],size:[canopyRim.width,canopyRim.height,corridorCanopy.depth]},
+  {position:[(houseSideX+westCanopyOuterX+canopyRim.width)/2,canopyRimY,corridorFrontWorldZ+canopyRim.width/2],size:[westCanopyOuterX+canopyRim.width-houseSideX,canopyRim.height,canopyRim.width],drains:3},
+  {position:[houseSideX+canopyRim.width/2,canopyRimY,corridorFrontWorldZ+(corridorCanopy.depth+canopyRim.width)/2],size:[canopyRim.width,canopyRim.height,corridorCanopy.depth-canopyRim.width]},
+  {position:[westCanopyOuterX+canopyRim.width/2,canopyRimY,(addedRooms[0].bounds[2]+corridorFrontWorldZ)/2],size:[canopyRim.width,canopyRim.height,westCorridorCanopy.width],drains:2},
+  {position:[westCanopyOuterX+(westCorridorCanopy.depth+canopyRim.width)/2,canopyRimY,addedRooms[0].bounds[2]+canopyRim.width/2],size:[westCorridorCanopy.depth-canopyRim.width,canopyRim.height,canopyRim.width]},
+]
 const westRoofFrontZ=addedRooms[0].bounds[2]-.175
 export const westRoof={
   centerX:(westRoofFrontZ+corridorFrontWorldZ)/2-westWing.position[2],centerZ:0,
   width:corridorFrontWorldZ-westRoofFrontZ,depth:westWing.depth+.4,
-  eaveY:corridorCanopy.baseY+corridorCanopy.thickness,rise:.65,thickness:.1,
+  // Owner requested another 30 cm after the earlier 20 cm lift; canopy stays fixed.
+  eaveY:corridorCanopy.baseY+corridorCanopy.thickness+.5,rise:.65,thickness:.1,
   wallMinX:addedRooms[0].bounds[2]-westWing.position[2],wallMaxX:corridorFrontWorldZ-westWing.position[2],
 }
 // Owner annotation: door 1 replaced the window nearest the main house;
@@ -166,9 +198,9 @@ export const westRoof={
 export const westFacade = {
   doorTopY:houseWindowCenterY+houseWindowOpeningHeight/2,
   doorLeafHeight:2.64,
-  windowCenterY:houseWindowCenterY,
+  windowCenterY:2.715,
   doors: [{id:'middle',z:4.28,width:1.12},{id:'door-1',z:6.82,width:1.12}],
-  windows: [{z:1.1,width:2.16,height:houseWindowOpeningHeight,columns:4,rows:2}],
+  windows: [{z:1.1,width:2.16,height:2,columns:4,rows:2}],
 }
 export const homePhotos = [
   { src: '/home-photos/01-house.jpg', name: '屋前的台阶', note: '2015.02.19 · 白墙、木窗、晾衣绳', position: [1.4, 1.65, .5], target: [1.4, 1.8, 7.8] },

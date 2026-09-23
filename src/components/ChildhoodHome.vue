@@ -7,16 +7,23 @@ const housePath=`M17 135h94V${mapWingFrontY}h24v${182-mapWingFrontY}H17Z`
 const host=ref(null),ready=ref(false),entered=ref(false),error=ref(''),warning=ref(''),view=ref(2),mode=ref('walk'),gallery=ref(false),notes=ref(false),position=ref({x:0,z:3,yaw:0})
 const current=computed(()=>homePhotos[view.value])
 const photoIndex=ref(2),selectedPhoto=computed(()=>homePhotos[photoIndex.value])
+const photoTextures=ref(true),photoReady=ref(0),photoInspect=ref(false)
+const gaussianDetails=ref(true),hybridReady=ref(false)
+const compareOpacity=ref(.5)
+function comparePhoto(){entered.value=true;gallery.value=false;notes.value=false;photoInspect.value=false;world?.photoCompare()}
 let world,disposed=false
 const drawer=ref(null)
 let returnFocus=null
 watch([gallery,notes],async([a,b])=>{if(a||b){returnFocus=document.activeElement;await nextTick();drawer.value?.querySelector('button')?.focus()}else{returnFocus?.focus?.()}})
 const directions=[{key:'KeyW',label:'向前走',symbol:'↑'},{key:'KeyA',label:'向左走',symbol:'←'},{key:'KeyS',label:'向后走',symbol:'↓'},{key:'KeyD',label:'向右走',symbol:'→'}]
 function enter(){entered.value=true;world?.enter()}
-function go(index){view.value=index;mode.value='walk';gallery.value=false;notes.value=false;entered.value=true;world?.view(index)}
+function go(index){photoInspect.value=false;view.value=index;mode.value='walk';gallery.value=false;notes.value=false;entered.value=true;world?.view(index)}
 function toggleGallery(){gallery.value=!gallery.value;if(gallery.value)photoIndex.value=view.value;notes.value=false;world?.pause(gallery.value||!entered.value)}
 function toggleNotes(){notes.value=!notes.value;gallery.value=false;world?.pause(notes.value||!entered.value)}
-function overview(){entered.value=true;mode.value='overview';world?.overview()}
+function overview(){photoInspect.value=false;entered.value=true;mode.value='overview';world?.overview()}
+function togglePhotoTextures(){photoTextures.value=!photoTextures.value;world?.photoTextures(photoTextures.value)}
+function toggleGaussianDetails(){gaussianDetails.value=!gaussianDetails.value;world?.gaussianDetails(gaussianDetails.value)}
+function inspectPhotos(){entered.value=true;gallery.value=false;notes.value=false;photoInspect.value=true;world?.photoDetail()}
 function keyClose(e){if(e.key==='Escape'){gallery.value=false;notes.value=false;world?.pause(!entered.value)}
   if(e.key==='Tab'&&(gallery.value||notes.value)){const items=[...(drawer.value?.querySelectorAll('button:not(:disabled),a[href]')||[])],first=items[0],last=items.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}}
 }
@@ -24,7 +31,7 @@ onMounted(async()=>{
   document.title='回家 · 记忆里的院子'
   window.addEventListener('keydown',keyClose)
   try{const {createChildhoodScene}=await import('../scene/childhoodScene.js');if(disposed)return
-    const instance=await createChildhoodScene(host.value,change=>{if(disposed)return;if(change.position)position.value=change.position;if(change.mode)mode.value=change.mode;if(change.view!==undefined)view.value=change.view;if(change.warning)warning.value=change.warning})
+    const instance=await createChildhoodScene(host.value,change=>{if(disposed)return;if(change.position)position.value=change.position;if(change.mode)mode.value=change.mode;if(change.view!==undefined)view.value=change.view;if(change.warning)warning.value=change.warning;if(change.hybridReady!==undefined)hybridReady.value=change.hybridReady;if(change.photoReady!==undefined)photoReady.value=change.photoReady})
     if(disposed){instance.dispose();return}world=instance;ready.value=true
   }catch(e){console.error('Courtyard scene failed',e);error.value='三维场景未能打开。可以先看原照片；请确认浏览器支持 WebGL。'}
 })
@@ -34,6 +41,8 @@ onBeforeUnmount(()=>{disposed=true;window.removeEventListener('keydown',keyClose
 <template>
   <main class="home-experience" :class="{entered}">
     <div ref="host" class="home-canvas"></div>
+    <div v-if="mode==='calibration'" class="photo-alignment" aria-hidden="true"><img src="/home-photos/01-house.jpg" :style="{opacity:compareOpacity}" alt="" /></div>
+    <div v-if="mode==='calibration'" class="alignment-controls"><label>原照叠加 <input v-model="compareOpacity" type="range" min="0" max="1" step=".01" aria-label="原照叠加透明度" /></label><span>初步相机拟合 · 尚未完成尺寸校正</span><button @click="go(0)">退出对照</button></div>
     <div class="home-vignette" aria-hidden="true"></div>
     <header class="home-top">
       <button class="home-brand" @click="go(2)" :disabled="!ready"><span class="door-symbol">⌂</span><span>回家<small>THE PLACE WE REMEMBER</small></span></button>
@@ -50,7 +59,14 @@ onBeforeUnmount(()=>{disposed=true;window.removeEventListener('keydown',keyClose
       <small class="honest-note">照片参考重建 · 非自动扫描 · 布局与尺寸待你校正</small>
     </section>
 
-    <div v-if="entered&&!gallery&&!notes" class="place-caption"><span>正在这里</span><h2>{{ mode==='overview'?'院子的空间关系':current.name }}</h2><p>{{ mode==='overview'?'拖动旋转 · 滚轮缩放 · 点击下方地点回到地面':'拖动环顾 · W A S D 行走 · 也可用右下角方向键' }}</p></div>
+    <div v-if="entered&&!gallery&&!notes&&mode!=='calibration'" class="place-caption"><span>正在这里</span><h2>{{ photoInspect?'照片里的西厢房':mode==='overview'?'院子的空间关系':current.name }}</h2><p>{{ photoInspect?'切换照片纹理，对照原模型 · 拖动查看侧面':mode==='overview'?'拖动旋转 · 滚轮缩放 · 点击下方地点回到地面':'拖动环顾 · W A S D 行走 · 也可用右下角方向键' }}</p></div>
+
+    <div v-if="ready&&photoReady&&!gallery&&!notes" class="photo-surface-controls">
+      <button v-if="hybridReady" :aria-pressed="gaussianDetails" @click="toggleGaussianDetails">高斯细节：{{gaussianDetails?'开':'关'}}</button>
+      <button :aria-pressed="photoTextures" @click="togglePhotoTextures">照片纹理：{{photoTextures?'开':'关'}}</button>
+      <button @click="inspectPhotos">近看照片贴图 ↗</button>
+      <button @click="comparePhoto">原照对齐 ↗</button>
+    </div>
 
     <nav v-if="ready" class="memory-stops" aria-label="走到照片里的位置">
       <span class="stops-label">记忆中的位置</span>
@@ -104,4 +120,17 @@ onBeforeUnmount(()=>{disposed=true;window.removeEventListener('keydown',keyClose
 @media(max-width:620px){.home-top{padding:19px 18px;gap:8px}.home-brand{font-size:19px!important;gap:7px}.home-brand small{font-size:6px;letter-spacing:.8px}.home-top-actions{gap:10px}.home-top-actions button{font-size:9px}.home-top-actions .photos-toggle{padding:8px}.home-top-actions button:first-child{display:none}.home-intro{top:25%;left:25px;right:25px}.home-intro h1{font-size:37px;letter-spacing:1px;margin:18px 0}.home-intro>p{font-size:12px}.home-intro .enter-home{min-height:51px;width:190px}.honest-note{font-size:8px}.home-vignette{background:linear-gradient(90deg,#16221baf,transparent),linear-gradient(0deg,#15211cc2,transparent 50%,#15211c70)}.memory-stops{left:18px;right:18px;bottom:50px;max-width:none;overflow-x:auto;padding:4px 0;gap:5px}.memory-stops button{min-height:43px;padding:8px 10px;font-size:10px}.memory-stops button>span{display:none}.memory-stops .overview-button{padding:8px}.home-bottom-note{left:18px;right:18px;bottom:19px;font-size:8px;letter-spacing:0}.home-position{right:18px;bottom:112px;padding:8px}.home-position svg{display:none}.home-position>span{display:none}.walk-pad{margin-top:0;grid-template-columns:repeat(3,37px)}.walk-pad button{width:37px;height:37px}.place-caption{left:20px;top:105px}.place-caption h2{font-size:23px}.place-caption p{max-width:220px;font-size:9px}.photo-drawer{padding:25px 20px}.photo-drawer h2{font-size:28px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 @media(max-width:620px){.home-top-actions button:first-child{display:block;max-width:50px;line-height:1.5}.home-top-actions{gap:8px}.home-brand small{max-width:90px}}
+</style>
+
+<style scoped>
+.photo-surface-controls{position:absolute;z-index:5;right:24px;top:91px;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:300px}
+.photo-surface-controls button{background:#20312ad9;color:#f0eee4;border:1px solid #e3dfca55;padding:9px 11px;font-size:10px;border-radius:3px;cursor:pointer}
+.photo-surface-controls button[aria-pressed="true"]{border-color:#d4bb86}
+@media(max-width:620px){.photo-surface-controls{top:76px;right:16px;max-width:230px}.photo-surface-controls button{font-size:9px;padding:7px 9px}.place-caption{top:130px}}
+</style>
+<style scoped>
+.photo-alignment{position:absolute;inset:0;pointer-events:none;z-index:2;display:flex;align-items:center;justify-content:center}
+.photo-alignment img{width:min(100vw,133.333vh);height:auto;max-height:100vh;object-fit:contain}
+.alignment-controls{position:absolute;z-index:6;bottom:135px;left:50%;transform:translateX(-50%);background:#20312aeb;color:#eee9da;padding:12px 16px;display:flex;gap:10px;flex-wrap:wrap;width:min(440px,85vw);font-size:11px}
+.alignment-controls label{display:flex;align-items:center;gap:10px}.alignment-controls span{width:100%;font-size:10px}.alignment-controls button{border:1px solid #aaa;background:transparent;color:inherit;padding:5px 9px}
 </style>

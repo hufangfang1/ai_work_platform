@@ -1,0 +1,17 @@
+{
+  "splats": 3228,
+  "source": "main.ply",
+  "method": "trained Gaussians projected to corrected facade using photo landmarks; covariance propagated; openings excluded",
+  "local_bounds": [
+    [
+      -4.595382545531169,
+      0.7700714893378392
+    ],
+    [
+      3.7990853916262837,
+      4.499659593549964
+    ]
+  ],
+  "planeZ": 0.193,
+  "landmark_rms_local": 0.05924716945832089
+}

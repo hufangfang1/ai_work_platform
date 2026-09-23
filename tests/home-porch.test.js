@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as T from 'three'
-import { createPorchGeometry, createRiserGeometry } from '../src/scene/homePorch.js'
+import { createPorchGeometry, createRiserGeometry, createBrokenStepGeometry, createPorchRampGeometry } from '../src/scene/homePorch.js'
 
 function checkTriangles(geometry) {
   const position = geometry.attributes.position, index = geometry.index
@@ -63,3 +63,28 @@ test('porch geometry also supports the shallow drainage lip without invalid face
   assert.throws(() => createPorchGeometry(0, 1, .2), RangeError)
   assert.throws(() => createRiserGeometry(15, 0), RangeError)
 })
+
+test('broken lower step stays below the porch and retains a solid, usable tread',()=>{
+  const geometry=createBrokenStepGeometry(15.3,.4,.085);
+  checkTriangles(geometry);
+  assert.equal(geometry.boundingBox.min.y,0);
+  assert.ok(geometry.boundingBox.max.y<=.086);
+  assert.ok(geometry.boundingBox.max.z<=.2);
+  assert.ok(geometry.boundingBox.max.z-geometry.boundingBox.min.z>.33);
+  geometry.dispose();
+});
+
+test('porch ramp is a solid slope from platform height down to a shallow yard lip',()=>{
+  const geometry=createPorchRampGeometry(.65,.95,.28);
+  checkTriangles(geometry);
+  const p=geometry.attributes.position;
+  let rear=0,foot=0;
+  for(let i=0;i<p.count;i++){
+    if(p.getZ(i)<-.47)rear=Math.max(rear,p.getY(i));
+    if(p.getZ(i)>.47)foot=Math.max(foot,p.getY(i));
+  }
+  assert.ok(rear>.275&&rear<=.281,'rear joins the veranda');
+  assert.ok(foot>0&&foot<.012,'foot is near flush with courtyard, not a box end');
+  assert.equal(geometry.boundingBox.min.y,0);
+  geometry.dispose();
+});

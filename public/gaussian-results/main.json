@@ -1,0 +1,27 @@
+{
+  "width": 1036,
+  "height": 784,
+  "group": "main",
+  "steps": 1800,
+  "splats": 80000,
+  "seconds": 142.3,
+  "training_psnr_before": [
+    13.275776863098145,
+    15.295448303222656,
+    13.870057106018066
+  ],
+  "training_psnr_after": [
+    34.49180221557617,
+    35.656341552734375,
+    36.656002044677734
+  ],
+  "photos": [
+    "01-house.jpg",
+    "references/main-entry-2015.jpg",
+    "references/passage-2015.jpg"
+  ],
+  "camera_source": "VGGT estimated, fixed during splat training",
+  "evaluation": "Masked training-view PSNR only, NOT held-out novel-view quality",
+  "backend": "metal-gauss 0.2.1, native MPS/Metal",
+  "ply": "main.ply"
+}

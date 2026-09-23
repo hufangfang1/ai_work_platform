@@ -1,0 +1,12 @@
+torch==2.7.1
+torchvision==0.22.1
+huggingface_hub>=0.29
+safetensors
+einops>=0.8
+numpy
+Pillow
+requests
+scipy>=1.11
+metal-gauss==0.2.1
+ninja>=1.11
+plyfile>=1.0

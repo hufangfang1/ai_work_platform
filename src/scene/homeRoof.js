@@ -106,7 +106,8 @@ export function createRoofTileLayout(width, depth, { tilt = 0, spacing = .24, ro
   const item = (kind, column, row, x, z, tileWidth, rise) => {
     // Colour is already linear RGB. A material should remain neutral; these
     // values vary subtly rather than painting individual stripes on the roof.
-    const tint = .91 + rand() * .065
+    const weather = Math.sin(x*.73+seed*.01)*Math.sin(z*.91+.4);
+    const tint = .92 + rand() * .045 + weather*.018 - (row/(Math.max(1,rows-1)))*.012
     return {
       kind, column, row, variant: Math.floor(rand() * 3), width: tileWidth, length, thickness,
       position: [x, -Math.tan(tilt) * z + thickness + rise, z],

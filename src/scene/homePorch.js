@@ -13,10 +13,10 @@ const seeded = value => {
  * UVs use four-metre world units. Enable vertexColors on the caller's material.
  * The caller owns and must dispose the returned BufferGeometry.
  */
-export function createPorchGeometry(width = 15.3, depth = 1.8, height = .28, seed = 1979) {
+export function createPorchGeometry(width = 15.3, depth = 1.8, height = .28, seed = 1979, bevelLimit = .021) {
   if (![width, depth, height].every(n => Number.isFinite(n) && n > 0)) throw new RangeError('Porch dimensions must be positive and finite')
   const rand = seeded(seed), segments = Math.max(2, Math.ceil(width / .13)), rows = 8
-  const bevel = Math.min(.021, height * .12, depth * .12)
+  const bevel = Math.min(bevelLimit, height * .12, depth * .12)
   const chips = Array.from({ length: Math.max(1, Math.round(width / .68)) }, () => ({
     x: (rand() - .5) * width,
     radius: Math.min(width * .24, .055 + rand() * .14),
@@ -85,27 +85,62 @@ export function createPorchGeometry(width = 15.3, depth = 1.8, height = .28, see
  * Use one untextured MeshStandardMaterial({ color: 'white', vertexColors: true,
  * roughness: 1 }); a full brick-wall map would put extra tiny bricks on these.
  */
-export function createRiserGeometry(width = 15.3, count = 49, seed = 2015) {
+export function createRiserGeometry(width = 15.3, count = Math.round(width / .13), seed = 2015) {
   if (!Number.isFinite(width) || width <= 0 || !Number.isInteger(count) || count < 1) throw new RangeError('A riser needs positive width and an integer brick count')
-  const rand = seeded(seed), gap = Math.min(.014, width / count * .07)
+  const rand = seeded(seed), gap = Math.min(.005, width / count * .04)
   const weights = Array.from({ length: count }, () => .85 + rand() * .3)
   const scale = (width - gap * (count - 1)) / weights.reduce((sum, n) => sum + n, 0)
-  const parts = [], baseColors = ['#847b68', '#8c7e6c', '#796f5d', '#948370', '#807969']
+  const parts = [], baseColors = ['#89867c', '#918a7f', '#817f75', '#948c80', '#8a8479', '#93887c', '#87877c']
   let x = -width / 2
   for (let i = 0; i < count; i++) {
-    const w = weights[i] * scale, h = .175 + rand() * .04
-    const piece = createPorchGeometry(w, .195 + rand() * .02, h, Math.floor(rand() * 0xffffffff))
+    const w = weights[i] * scale, h = .195 + rand() * .018
+    const piece = createPorchGeometry(w, .195 + rand() * .02, h, Math.floor(rand() * 0xffffffff), .004)
     piece.translate(x + w / 2, .006 + rand() * .009, (rand() - .5) * .018)
     const color = new T.Color(baseColors[Math.floor(rand() * baseColors.length)])
-    const attribute = piece.attributes.color, brightness = .95 + rand() * .1
-    for (let j = 0; j < attribute.count; j++) attribute.setXYZ(j,
-      attribute.getX(j) * color.r * brightness,
-      attribute.getY(j) * color.g * brightness,
-      attribute.getZ(j) * color.b * brightness)
+    const attribute = piece.attributes.color, brightness = .98 + rand() * .04
+    // Cement residue bridges the old brick colours; exposed clay is local,
+    // rather than alternating clean red/green blocks along the whole step.
+    const mortar=new T.Color('#a6a194'),position=piece.attributes.position
+    for (let j = 0; j < attribute.count; j++) {
+      const wash=.2+.4*Math.max(0,Math.sin(position.getX(j)*17+position.getY(j)*21+seed))
+      const aged=color.clone().lerp(mortar,wash)
+      attribute.setXYZ(j,attribute.getX(j)*aged.r*brightness,attribute.getY(j)*aged.g*brightness,attribute.getZ(j)*aged.b*brightness)
+    }
     parts.push(piece); x += w + gap
   }
   const geometry = mergeGeometries(parts)
   for (const part of parts) part.dispose()
   geometry.computeBoundingBox(); geometry.computeBoundingSphere()
   return geometry
+}
+
+// The shallow course below the veranda is chipped and wavy, not a straight
+// black drainage slot. Deform the closed slab, including both matching end rims.
+export function createBrokenStepGeometry(width, depth=.38, height=.085, seed=2015){
+  const geometry=createPorchGeometry(width,depth,height,seed,.018);
+  const p=geometry.attributes.position,c=geometry.attributes.color;
+  for(let i=0;i<p.count;i++){
+    const x=p.getX(i),y=p.getY(i),z=p.getZ(i);
+    const front=Math.max(0,(z+depth/2)/depth);
+    const chip=Math.pow(Math.max(0,Math.sin(x*5.3+seed)*Math.cos(x*11.7)),2);
+    p.setZ(i,z-front*(.012+.048*chip));
+    p.setY(i,y*(.91+.09*Math.sin(x*1.7+seed))*(1-front*.28*chip));
+    const shade=1-front*(.04+.12*chip);
+    c.setXYZ(i,c.getX(i)*shade,c.getY(i)*shade,c.getZ(i)*shade);
+  }
+  geometry.computeVertexNormals();geometry.computeBoundingBox();geometry.computeBoundingSphere();return geometry;
+}
+
+// Solid wedge, high at -Z against the porch, low at +Z into the yard.
+// Reuse the cement slab's worn edge and physical UVs, not a rotated box with
+// an exposed vertical foot. The rear reaches the same slab height exactly.
+export function createPorchRampGeometry(width,run,height,seed=2015){
+  const geometry=createPorchGeometry(width,run,height,seed,.009);
+  const p=geometry.attributes.position;
+  for(let i=0;i<p.count;i++){
+    const t=T.MathUtils.clamp((p.getZ(i)+run/2)/run,0,1);
+    const top=height*(1-t)+.007*t;
+    p.setY(i,p.getY(i)/height*top);
+  }
+  geometry.computeVertexNormals();geometry.computeBoundingBox();geometry.computeBoundingSphere();return geometry;
 }

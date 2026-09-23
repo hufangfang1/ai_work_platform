@@ -3,6 +3,11 @@ dist/
 .env.local
 .playwright-cli/
 .DS_Store
+.venv-sfm/
+.venv-neural/
+artifacts/neural/
+__pycache__/
+artifacts/sfm/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

@@ -21,11 +21,11 @@ const canopyBounds=new T.Box3().setFromPoints([-1,1].flatMap(x=>[-1,1].map(z=>ne
 ).applyMatrix4(houseMatrix))))
 const canopyTop=corridorCanopy.baseY+corridorCanopy.thickness
 
-test('both roofs and eave platforms rise one metre while the wall tops still meet them',()=>{
-  near(mainRoof.eaveY,5.1)
+test('west roof rises another 30 cm while main roof, platforms and wall heights stay fixed',()=>{
+  near(mainRoof.eaveY,5.3)
   near(corridorCanopy.baseY,4.9)
   near(westCorridorCanopy.baseY,corridorCanopy.baseY)
-  near(westRoof.eaveY,canopyTop)
+  near(westRoof.eaveY,canopyTop+.5)
   near(westWing.wallHeight,5)
   const facade=createFacadeGeometry({minX:houseLocalMinX,maxX:houseLocalMaxX,height:5,doorX:houseDoorLocalX,windows:houseWindows})
   near(facade.boundingBox.max.y,5)
@@ -147,7 +147,8 @@ test('low shelter bears on the wall and ends flush with the washing corridor',()
   near(wallCrest,wallValley)
   assert.ok(wallCrest>sideWallHeight,'sheet sits just above its wall-supported beam')
   near(shedClerestory.z,shedRoof.backZ)
-  near(shedClerestory.bottomY,sheet.boundingBox.max.y)
+  near(shedClerestory.bottomY,shedStepWall.topY)
+  assert.ok(shedClerestory.bottomY<sheet.boundingBox.min.y)
   near(shedClerestory.topY,corridorCanopy.baseY)
   assert.ok(shedClerestory.topY-shedClerestory.bottomY>1.8,'glass fills the gap to the projecting eave')
   sheet.dispose()
@@ -162,13 +163,17 @@ test('brick closes the outside flank below the main eave without replacing the f
   near(shedSideBrick.endZ,corridorFrontWorldZ+corridorCanopy.depth)
 })
 
-test('cement wall rises from the house step to the low shed roof',()=>{
+test('thick half wall supports recessed glazing and retains passage clearance',()=>{
   near(shedStepWall.minX,eastWall.centerX)
   near(shedStepWall.maxX,shedPlacement.position[0]+shedRoof.centerLocalX+shedRoof.width/2)
   near(shedStepWall.z,corridorFrontWorldZ)
   near(shedStepWall.z,shedClerestory.z)
-  near(shedStepWall.bottomY,frontPorch.height)
-  near(shedStepWall.topY,shedBeamY(shedStepWall.z-shedPlacement.position[2])+shedPlacement.beamThickness/2)
+  near(shedStepWall.bottomY,0)
+  near(shedStepWall.topY,1.5)
+  near(shedStepWall.topY-frontPorch.height,1.22)
+  near(shedStepWall.thickness,.38)
+  assert.ok(shedClerestory.frameZ>shedStepWall.z)
+  assert.ok(shedClerestory.frameZ<shedStepWall.z+shedStepWall.thickness/2)
   assert.ok(shedStepWall.topY<shedPlacement.roofY)
   assert.equal(canWalk(-4.5,shedStepWall.z),false)
   assert.equal(canWalk(-2,shedStepWall.z),true)

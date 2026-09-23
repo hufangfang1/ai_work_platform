@@ -56,3 +56,33 @@ test('soil boundary rejects malformed or out-of-yard lines',()=>{
   assert.throws(()=>createYardSoilGeometry([[frontZ,0],[frontZ,1],[backZ,0]],{frontZ,backZ,minX,maxX}),RangeError)
   assert.throws(()=>createYardSoilGeometry([[frontZ,minX],[backZ,0]],{frontZ,backZ,minX,maxX}),RangeError)
 })
+
+test('ground remnants remain shallow, finite and face upward',async()=>{
+  const {createGroundRemnants}=await import('../src/scene/homeGroundRegions.js');
+  const geometry=createGroundRemnants(yardGroundBoundary),p=geometry.attributes.position,n=geometry.attributes.normal,c=geometry.attributes.color;
+  for(let i=0;i<p.count;i++){
+    assert.ok(Number.isFinite(p.getX(i))&&Number.isFinite(p.getZ(i)));
+    assert.ok(Math.abs(p.getY(i)-.006)<1e-6);
+    assert.ok(n.getY(i)>.99);
+    assert.ok(c.getW(i)>=0&&c.getW(i)<=1);
+  }
+  assert.ok(geometry.boundingBox.min.x>-6.3);
+  geometry.dispose();
+});
+
+test('yard wear has upward faces, feathered opacity and courtyard-aligned UVs',async()=>{
+  const {createYardWearGeometry}=await import('../src/scene/homeGroundRegions.js');
+  const geometry=createYardWearGeometry(yardGroundBoundary,{frontZ,backZ,minX,maxX});
+  const p=geometry.attributes.position,c=geometry.attributes.color,n=geometry.attributes.normal,u=geometry.attributes.uv;
+  let transparent=false,opaque=false;
+  for(let i=0;i<p.count;i++){
+    assert.ok(n.getY(i)>.99);
+    assert.ok(p.getX(i)>minX&&p.getX(i)<maxX);
+    assert.ok(p.getZ(i)>frontZ&&p.getZ(i)<backZ);
+    assert.ok(Math.abs(u.getX(i)-(p.getX(i)-minX)/(maxX-minX))<1e-6);
+    assert.ok(Math.abs(u.getY(i)-(backZ-p.getZ(i))/(backZ-frontZ))<1e-6);
+    transparent ||= c.getW(i)===0;opaque ||= c.getW(i)>.8;
+  }
+  assert.ok(transparent&&opaque,'solid centres feather into intact paving');
+  geometry.dispose();
+});

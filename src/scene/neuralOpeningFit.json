@@ -1,0 +1,67 @@
+{
+  "source": "neural.html: main group, 01-house.jpg, median 5x5 neighbourhood",
+  "scaleAnchor": "doorway head 3.05 and porch 0.28 retained as provisional scale",
+  "doorCenterX": 1.725,
+  "doorWidth": 2.338,
+  "sideWindowWidth": 0.5,
+  "sideWindowOffset": 1.467,
+  "openingWidth": 3.523,
+  "windowX": -2.689,
+  "windowWidth": 2.93,
+  "windowSill": 1.487,
+  "windowRail": 2.781,
+  "windowTop": 3.715,
+  "windowTopNote": "top cropped in source 01, previous height retained; rightmost window not measured",
+  "measuredLandmarks": {
+    "window sill left": [
+      -4.161586511289709,
+      1.511872832462311
+    ],
+    "window sill right": [
+      -1.2389746397893893,
+      1.461965645547386
+    ],
+    "window rail left": [
+      -4.147229746478915,
+      2.7270290987361445
+    ],
+    "window rail right": [
+      -1.2095683639257295,
+      2.834038578508998
+    ],
+    "door head left": [
+      0.6048148506215336,
+      3.0500000000000003
+    ],
+    "door head right": [
+      2.981095981740016,
+      3.0500000000000003
+    ],
+    "door foot left": [
+      0.5067743793230799,
+      0.31435053850480776
+    ],
+    "door foot right": [
+      2.807314788315371,
+      0.24564946149519273
+    ],
+    "sidelight sill left": [
+      -0.023316751739976604,
+      1.4924841017739439
+    ],
+    "sidelight sill right": [
+      3.409733153207866,
+      1.3467041450971549
+    ]
+  },
+  "facadeOffsetX": 0.0,
+  "windowOffsetX": 1.1,
+  "westCornerAnchor": {
+    "photo": [
+      125,
+      350
+    ],
+    "modelLocalX": -5.875,
+    "note": "photo-estimated junction, not surveyed; ~1.38 m clear wall to window"
+  }
+}
