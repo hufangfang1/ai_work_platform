@@ -74,7 +74,7 @@ test('broken lower step stays below the porch and retains a solid, usable tread'
   geometry.dispose();
 });
 
-test('porch ramp is a solid slope from platform height down to a shallow yard lip',()=>{
+test('porch ramp is a solid slope from platform height down flush with the yard',()=>{
   const geometry=createPorchRampGeometry(.65,.95,.28);
   checkTriangles(geometry);
   const p=geometry.attributes.position;
@@ -84,7 +84,7 @@ test('porch ramp is a solid slope from platform height down to a shallow yard li
     if(p.getZ(i)>.47)foot=Math.max(foot,p.getY(i));
   }
   assert.ok(rear>.275&&rear<=.281,'rear joins the veranda');
-  assert.ok(foot>0&&foot<.012,'foot is near flush with courtyard, not a box end');
+  assert.ok(foot<.002,'foot feathers to zero, one continuous cement plane');
   assert.equal(geometry.boundingBox.min.y,0);
   geometry.dispose();
 });

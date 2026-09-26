@@ -131,15 +131,17 @@ export function createBrokenStepGeometry(width, depth=.38, height=.085, seed=201
   geometry.computeVertexNormals();geometry.computeBoundingBox();geometry.computeBoundingSphere();return geometry;
 }
 
-// Solid wedge, high at -Z against the porch, low at +Z into the yard.
-// Reuse the cement slab's worn edge and physical UVs, not a rotated box with
-// an exposed vertical foot. The rear reaches the same slab height exactly.
+// Solid wedge, high at -Z against the porch, feathering to a hair under the
+// courtyard plane at +Z so the cement reads as one continuous surface with
+// the yard, never a raised lip. Reuse the cement slab's worn edge and
+// physical UVs, not a rotated box with an exposed vertical foot. The rear
+// reaches the same slab height exactly.
 export function createPorchRampGeometry(width,run,height,seed=2015){
   const geometry=createPorchGeometry(width,run,height,seed,.009);
   const p=geometry.attributes.position;
   for(let i=0;i<p.count;i++){
     const t=T.MathUtils.clamp((p.getZ(i)+run/2)/run,0,1);
-    const top=height*(1-t)+.007*t;
+    const top=height*(1-t)+.0008*t;
     p.setY(i,p.getY(i)/height*top);
   }
   geometry.computeVertexNormals();geometry.computeBoundingBox();geometry.computeBoundingSphere();return geometry;
