@@ -15,7 +15,7 @@ test('iron gate keeps its existing silhouette with millimetre-scale bowing',()=>
   assert.throws(()=>createIronGatePanel(0),RangeError);g.dispose();
 });
 
-test('raised gate apron AO coordinates are normalized without altering color UVs',()=>{
+test('flush gate apron AO coordinates are normalized without altering color UVs',()=>{
   const g=createPorchGeometry(gateApron.width,gateApron.depth,.065),oldUV=g.attributes.uv.array.slice();
   setGroundOcclusionUV(g,[gateX-gateApron.width/2,gateX+gateApron.width/2,gateApron.frontZ,gateApron.backZ],[gateX,0,gateApron.centerZ]);
   assert.deepEqual(g.attributes.uv.array,oldUV);

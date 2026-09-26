@@ -563,7 +563,7 @@ export async function createChildhoodScene(host, report) {
   const gateRail=M.mapped(M.maps.gatePaint,[1,1],{metalness:.18,color:'#b9b1a5'});
   const gateLeafH=innerTop-.08;
   for(const side of [-1,1]){
-    const hingeX=side*innerHalf,leaf=group(gate,[hingeX,0,innerZ]);leaf.rotation.y=side===-1?.1:-.04;
+    const hingeX=side*innerHalf,leaf=group(gate,[hingeX,-.033,innerZ]);leaf.rotation.y=side===-1?.1:-.04;
     mesh(leaf,g(createIronGatePanel(gateLeafW,gateLeafH)),gateEnamel,[-side*gateLeafW/2,.035,0]);
     for(const faceZ of [-.045,.045]){
       for(const x of [-side*.018,-side*(gateLeafW-.018)])box(leaf,gateRail,[x,(gateLeafH+.07)/2,faceZ],[.036,gateLeafH,.025]);
@@ -571,7 +571,7 @@ export async function createChildhoodScene(host, report) {
     }
     for(const y of [.45,1.36,2.25]){
       box(leaf,gateRail,[-side*.065,y,.05],[.13,.12,.018]);
-      rod(gate,[hingeX,y-.09,innerZ+.04],[hingeX,y+.09,innerZ+.04],.025,metal);
+      rod(gate,[hingeX,y-.09-.033,innerZ+.04],[hingeX,y+.09-.033,innerZ+.04],.025,metal);
     }
     const handleX=-side*(gateLeafW-.15);
     for(const z of [-.065,.065]){
@@ -584,14 +584,16 @@ export async function createChildhoodScene(host, report) {
   }
   for(const side of [-1,1])box(gate,gateRail,[side*innerHalf,innerTop/2,innerZ-.055],[.05,innerTop,.07]);
   box(gate,gateRail,[0,innerTop,innerZ-.055],[gatePortico.innerClearWidth,.05,.07]);
-  // The separate, raised apron needs its own AO; the courtyard map below it
-  // cannot shade this surface through a solid slab.
+  // The gate apron is flush with the yard: one continuous cement plane, no
+  // raised lip. The slab is sunk so its top sits 1 mm above the courtyard
+  // ground; only the top face remains visible. It keeps its own AO because
+  // the courtyard map below cannot shade it through the solid slab.
   const apronBounds=[gateX-gateApron.width/2,gateX+gateApron.width/2,gateApron.frontZ,gateApron.backZ],apronZ=gateApron.centerZ;
   const apronAO=bakeGroundOcclusion(apronBounds,undefined,64,.083);extraTextures.add(apronAO);
   const apronGeo=g(setGroundOcclusionUV(createPorchGeometry(gateApron.width,gateApron.depth,.065,1914),apronBounds,[gateX,0,apronZ]));
   const gateFloorMaterial=M.mapped(M.maps.ground,[1,1],{vertexColors:true,aoMap:apronAO,aoMapIntensity:1.1});
-  mesh(scene,apronGeo,gateFloorMaterial,[gateX,0,apronZ]);
-  ageSurface(scene,gateApron.width,gateApron.depth,[gateX,.068,gateApron.backZ],{rotationX:-Math.PI/2,seed:11140,strength:.75});
+  mesh(scene,apronGeo,gateFloorMaterial,[gateX,-.063,apronZ]);
+  ageSurface(scene,gateApron.width,gateApron.depth,[gateX,.005,gateApron.backZ],{rotationX:-Math.PI/2,seed:11140,strength:.75});
   // Long wooden poles leaning beside the gate.
   for(let i=0;i<12;i++)rod(scene,[gateEastPillarX-1.0-rand()*.6,.05,gateZ+.8+rand()*.4],[gateEastPillarX-.35-rand()*.6,2.0+rand()*1.1,gateZ+.5],.018+rand()*.015,wood)
   rod(scene,[gateWestPillarX+.5,.1,gateZ+.8],[gateWestPillarX+.85,2.1,gateZ+.4],.024,wood);const shovel=box(scene,silver,[gateWestPillarX+.49,.28,gateZ+.84],[.38,.48,.045]);shovel.rotation.x=-.2
