@@ -26,11 +26,11 @@ test('weathered PBR maps keep data linear, repeat aligned and resources disposab
       const source=materials.maps[name],material=materials.mapped(source,[2,3])
       used.push(material)
       assert.equal(material.map.colorSpace,T.SRGBColorSpace)
-      assert.equal(material.map.image.width,1024)
+      assert.equal(material.map.image.width,name==='brick'?2048:1024)
       assert.equal(material.map.source,source.source)
       for(const texture of [material.bumpMap,material.roughnessMap]){
         assert.equal(texture.colorSpace,T.NoColorSpace)
-        assert.equal(texture.image.width,512)
+        assert.equal(texture.image.width,1024)
         assert.deepEqual(texture.repeat.toArray(),[2,3])
         assert.equal(texture.wrapS,T.RepeatWrapping)
         assert.equal(texture.anisotropy,4)

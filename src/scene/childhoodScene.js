@@ -27,9 +27,9 @@ import { homePhotos, housePlacement, houseLocalMinX, houseLocalMaxX, houseWestX,
 
 export async function createChildhoodScene(host, report) {
   const renderer=new T.WebGLRenderer({antialias:true,powerPreference:'default'})
-  renderer.setPixelRatio(Math.min(devicePixelRatio,1.6));renderer.outputColorSpace=T.SRGBColorSpace
+  renderer.setPixelRatio(Math.min(devicePixelRatio,matchMedia('(pointer:fine)').matches?2:1.6));renderer.outputColorSpace=T.SRGBColorSpace
   renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05
-  renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFShadowMap
+  renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap
   const canvas=renderer.domElement;canvas.tabIndex=0;canvas.setAttribute('aria-label','老家院子三维场景，拖动环顾，WASD或方向按钮行走');host.appendChild(canvas)
   const scene=new T.Scene();scene.background=new T.Color('#cbd0cb');scene.fog=new T.Fog('#cbd0cb',22,65)
   const pmrem=new T.PMREMGenerator(renderer),studio=new RoomEnvironment(),environment=pmrem.fromScene(studio,.06);scene.environment=environment.texture;scene.environmentIntensity=.45;studio.dispose();pmrem.dispose()
@@ -88,7 +88,7 @@ export async function createChildhoodScene(host, report) {
   let seed=2192015;const rand=()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296}
   const hemi=new T.HemisphereLight('#dce3e6','#77786f',2.1);scene.add(hemi)
   const sun=new T.DirectionalLight('#f2f2e9',.95);sun.position.set(-10,16,3);sun.target.position.set(0,0,0);scene.add(sun,sun.target)
-  sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-17,right:17,top:17,bottom:-17,near:1,far:48});sun.shadow.normalBias=.04;sun.shadow.bias=-.00015
+  sun.castShadow=true;sun.shadow.mapSize.set(4096,4096);Object.assign(sun.shadow.camera,{left:-12,right:12,top:12,bottom:-12,near:1,far:48});sun.shadow.normalBias=.04;sun.shadow.bias=-.00015
   const shadowHelper=new T.CameraHelper(sun.shadow.camera);shadowHelper.visible=false;scene.add(shadowHelper)
   const earth=mesh(scene,g(new T.PlaneGeometry(140,140)),M.mapped(M.maps.soil,[16,16]));earth.rotation.x=-Math.PI/2
   // The earlier courtyard top was below the infinite earth plane, hiding its
